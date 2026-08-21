@@ -55,3 +55,14 @@ It is updated at meaningful milestones, not for every edit.
 - The public tree and complete Git history passed Gitleaks; Semgrep reported zero findings
   across the source/test/packaging tree; the resolved Python environment reported no known
   vulnerabilities after its installer was updated.
+
+## 2026-08-21 — Live end-to-end payload acceptance
+
+- Selected the bounded `SM-J105F / XSG` target after metadata-only probes.
+- Downloaded one 1.0 GiB official Samsung payload with the checksum-pinned samloader-rs 2.0.0
+  Linux backend, then verified and cataloged the decrypted ZIP.
+- Extracted and hashed BL, AP, CP, and CSC `.tar.md5` components under the configured archive
+  safety limits and reached the persisted `EXTRACTED` state.
+- Repeated discovery matched the existing observation, and repeated download-by-ID returned
+  the unchanged verified ZIP without a second transfer or `.partial` file.
+- No nested component archive was unpacked and no firmware was flashed.
