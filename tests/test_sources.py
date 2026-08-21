@@ -17,6 +17,7 @@ def test_samfrew_latest_parser() -> None:
         ("SM-S928U1", "CCT"),
     ]
     assert rows[0].source_updated_date == "7/6/2026"
+    assert rows[0].android_version == "16"
 
 
 def test_sammobile_latest_parser() -> None:
@@ -27,6 +28,7 @@ def test_sammobile_latest_parser() -> None:
     ]
     assert rows[0].country == "USA"
     assert rows[0].source_updated_date == "2026-08-21"
+    assert rows[0].android_version == "17"
 
 
 @pytest.mark.parametrize("parser", [parse_samfrew, parse_sammobile])

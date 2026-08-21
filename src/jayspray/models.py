@@ -101,6 +101,7 @@ class TargetObservation:
     country: str | None = None
     region: str | None = None
     carrier: str | None = None
+    android_version: str | None = None
     source_updated_date: str | None = None
     observed_at: datetime = field(default_factory=utc_now)
     extra: dict[str, Any] = field(default_factory=dict)

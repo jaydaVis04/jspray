@@ -15,6 +15,7 @@ DETAIL_RE = re.compile(
     r"download/(?P<pda>[A-Z0-9._+-]+)/(?P<record>\d+)/?$",
     re.IGNORECASE,
 )
+ANDROID_RE = re.compile(r"^\d+(?:\.\d+)?$")
 
 
 class _SamMobileParser(HTMLParser):
@@ -80,6 +81,7 @@ def parse_sammobile(html: str) -> tuple[TargetObservation, ...]:
                 model=model,
                 sales_csc=csc,
                 country=cells[1] or None,
+                android_version=cells[3] if ANDROID_RE.fullmatch(cells[3]) else None,
                 source_updated_date=cells[2] or None,
                 extra={"index_record": match.group("record")},
             )

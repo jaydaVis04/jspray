@@ -17,6 +17,7 @@ DOWNLOAD_RE = re.compile(
     re.IGNORECASE,
 )
 DATE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
+ANDROID_RE = re.compile(r"^\d+(?:\.\d+)?$")
 
 
 class _SamFrewParser(HTMLParser):
@@ -71,6 +72,11 @@ def parse_samfrew(html: str) -> tuple[TargetObservation, ...]:
         seen.add(target_key)
         device_name = unquote(match.group("device").replace("__", " ").replace("_", " "))
         date = next((item for item in text if DATE_RE.fullmatch(item)), None)
+        android_version = None
+        for index, value in enumerate(text[:-1]):
+            if value.lower() == "android" and ANDROID_RE.fullmatch(text[index + 1]):
+                android_version = text[index + 1]
+                break
         observations.append(
             TargetObservation(
                 source="samfrew",
@@ -80,6 +86,7 @@ def parse_samfrew(html: str) -> tuple[TargetObservation, ...]:
                 model=model,
                 sales_csc=csc,
                 device_name=device_name or None,
+                android_version=android_version,
                 source_updated_date=date,
                 extra={"index_record": match.group("record").lower()},
             )

@@ -19,7 +19,7 @@ SamFrew + SamMobile (+ SamFW when ordinarily accessible)
                     |
        Samsung latest-version lookup and FUS download
                     |
-          verify -> decrypt ZIP -> extract -> manifest
+          verify -> decrypt ZIP -> extract -> manifest + metadata.json
 ```
 
 The public indexes are discovery signals. JAYSPRAY ignores their PDA values when deciding
@@ -44,38 +44,53 @@ a headless Samsung FUS client, then JAYSPRAY separately validates and extracts t
 ZIP. See [Bifrost research](docs/bifrost-research.md) and
 [third-party notices](THIRD_PARTY_NOTICES.md).
 
-## Use an existing metadata file
+## Metadata output and duplicate cache
 
-A user can point JAYSPRAY at an existing, even million-line, `metadata.json` file:
+By default JAYSPRAY creates and maintains `/var/lib/jayspray/metadata.json`. Its exact
+top-level-object schema is shown in [example_metadata.json](example_metadata.json). Each
+entry is keyed by `MODEL/ANDROID_VERSION/BUILD`:
 
 ```toml
 [metadata]
-path = "/srv/catalog/metadata.json"
-append_completed = false
+path = "/var/lib/jayspray/metadata.json"
+append_completed = true
 ```
 
-Before resolution or download, JAYSPRAY scans that file for normalized Samsung model tokens
-such as `SM-S928U1`. If a discovered model appears anywhere in the file, every region for
-that model is skipped. The scan builds a SQLite index once; later runs read only newly
-appended bytes unless the file was replaced, truncated, or rewritten. Lookups are indexed
-SQLite queries, not a new full-file `grep` for every model.
+To use an existing catalog, replace only `metadata.path` with its absolute path. The file
+must use the same top-level keyed-object shape when appending is enabled. Setting
+`append_completed = false` makes any text/JSON catalog scan-only.
 
-The input may be JSON, JSON Lines, or other line-oriented text for model checking. The path
-must be absolute, must name a regular file, and symlinks are refused. A configured missing
-or unreadable file stops the run so JAYSPRAY cannot accidentally download known models.
+Before resolution or download, JAYSPRAY scans the file for normalized Samsung model tokens.
+If a model appears anywhere, every region for it is skipped. The first scan builds a SQLite
+index; growing million-line files are scanned from a small overlap near the previous end,
+while replacement, truncation, or rewrite safely rebuilds the cache. Each model check is an
+indexed SQLite lookup rather than a full-file `grep`.
 
-Appending is deliberately opt-in. The current writer supports one JSON object per line
-(JSONL) and appends these keys after a verified download: `model`, `region`, `full_version`,
-`firmware_release_id`, `artifact`, `sha256`, `completed_at`, and `source`. It locks and
-flushes the file before refreshing the cache. Top-level JSON arrays are scan-only and are
-never rewritten. Keep `append_completed = false` until the catalog's exact record format
-has been confirmed; a format-specific writer can then preserve that schema exactly.
+After successful extraction, JAYSPRAY derives the example fields and atomically adds the
+entry. It preserves the existing file, locks it, validates each top-level JSON member in a
+streaming pass, writes a restrictive temporary sibling, flushes it, and renames it over the
+old file. A crash cannot leave half a JSON record. Re-extracting a model is idempotent.
+
+Immediately available fields include model, Android version reported by the discovery feed,
+Samsung's resolved AP build, ROM path(s), and component-missing flags. JAYSPRAY recursively
+looks for Android `build.prop`, libc, SQLite, linker, RIL libraries, and `framework.jar` in
+the extraction tree. When deeper partition contents are present, it records their relative
+paths, compatibility MD5 identifiers, ABI/VNDK/vendor SDK, security patches, chipset/EGL,
+RIL settings, and build timestamp. Unavailable values are JSON `null`; they are never
+invented. MD5 exists only because the supplied schema requires it—download integrity still
+uses SHA-256.
+
+The standard extraction catalogs Samsung `.tar.md5` component archives but does not pretend
+that encrypted/decrypted ZIP extraction alone exposes files inside Android sparse, dynamic,
+ext4, or EROFS partition images. Those partition-derived fields remain `null`/missing until
+such files exist in the extraction tree.
 
 The local artifact catalog is also checked by model. Therefore a verified download remains
 protected from a second regional download even while external-file appending is disabled.
 
-Do not commit a private metadata catalog. Its contents remain in the configured external
-file and the local SQLite cache; JAYSPRAY does not print the file contents.
+The path must be absolute and a regular file; symlinks are refused. A scan-only missing file
+fails closed. An append-enabled missing file is safely initialized as `{}`. Do not commit a
+private catalog: JAYSPRAY never prints its contents.
 
 ## Install on Linux
 
@@ -116,7 +131,7 @@ Useful commands:
 # Or download the first discovered model
 .venv/bin/jayspray --config "$PWD/config.toml" download --first 1
 
-# Extract a verified download and generate its manifest
+# Extract, generate its manifest, and update metadata.json
 .venv/bin/jayspray --config "$PWD/config.toml" extract <firmware-release-id>
 
 # Search targets and inspect status
@@ -135,7 +150,7 @@ Copy [config.example.toml](config.example.toml) and set:
 
 - enabled indexes, request timeouts, retry policy, delay, and 21-day lookback;
 - SQLite, download, extraction, cache, and state paths;
-- optional external metadata path and append policy;
+- output/existing metadata path and append policy;
 - absolute `samloader` path and optional executable SHA-256 pin;
 - free-space threshold and automatic download/extraction policy.
 
@@ -144,6 +159,7 @@ Default storage is:
 ```text
 /var/lib/jayspray/
 ├── database/firmware.db
+├── metadata.json
 ├── downloads/<model>/<resolved-version>/<release-id>/firmware.zip
 ├── extracted/<model>/<resolved-version>/<release-id>/manifest.json
 ├── cache/

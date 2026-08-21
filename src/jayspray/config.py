@@ -27,7 +27,7 @@ class HttpConfig:
     retry_base_seconds: float = 1.0
     request_delay_seconds: float = 1.0
     max_response_bytes: int = 5 * 1024**2
-    user_agent: str = "JAYSPRAY/0.3.0"
+    user_agent: str = "JAYSPRAY/0.4.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,8 +60,8 @@ class ExtractConfig:
 
 @dataclass(frozen=True, slots=True)
 class MetadataConfig:
-    path: Path | None = None
-    append_completed: bool = False
+    path: Path | None = Path("/var/lib/jayspray/metadata.json")
+    append_completed: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,7 +284,12 @@ def load_config(path: Path | None = None) -> AppConfig:
             ),
         ),
         metadata=MetadataConfig(
-            path=_optional_path(metadata.get("path")),
+            path=_optional_path(
+                metadata.get(
+                    "path",
+                    str(default.metadata.path) if default.metadata.path is not None else None,
+                )
+            ),
             append_completed=_boolean(
                 metadata.get("append_completed"),
                 default.metadata.append_completed,
@@ -330,6 +335,14 @@ def load_config(path: Path | None = None) -> AppConfig:
         raise ConfigurationError("download.concurrency must be 1 in this release")
     if cfg.metadata.append_completed and cfg.metadata.path is None:
         raise ConfigurationError("metadata.append_completed requires metadata.path")
+    if (
+        cfg.download.automatic
+        and cfg.metadata.append_completed
+        and not cfg.download.automatic_extract
+    ):
+        raise ConfigurationError(
+            "automatic metadata append requires download.automatic_extract"
+        )
     if not Path(cfg.download.samloader_executable).is_absolute():
         raise ConfigurationError("download.samloader_executable must be an absolute path")
     if cfg.logging_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:

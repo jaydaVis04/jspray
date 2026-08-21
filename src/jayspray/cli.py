@@ -107,7 +107,11 @@ def _metadata_index(
 ) -> ExternalMetadataIndex | None:
     if config.metadata.path is None:
         return None
-    index = ExternalMetadataIndex(database, config.metadata.path)
+    index = ExternalMetadataIndex(
+        database,
+        config.metadata.path,
+        create_if_missing=config.metadata.append_completed,
+    )
     index.refresh()
     return index
 
@@ -161,35 +165,6 @@ def _filter_download_rows(
             continue
         selected.append(row)
     return selected
-
-
-def _append_completed_metadata(
-    database: Database,
-    config: AppConfig,
-    metadata_index: ExternalMetadataIndex | None,
-    row: Any,
-    path: Path,
-) -> None:
-    if metadata_index is None or not config.metadata.append_completed:
-        return
-    artifact = database.connection.execute(
-        "SELECT sha256 FROM artifact WHERE firmware_release_id = ? "
-        "AND path = ? AND status = 'VERIFIED' ORDER BY id DESC LIMIT 1",
-        (str(row["id"]), str(path)),
-    ).fetchone()
-    if artifact is None or not artifact["sha256"]:
-        raise RuntimeError("verified firmware artifact has no SHA-256 for metadata append")
-    metadata_index.append_completed(
-        {
-            "model": row["model"],
-            "region": row["sales_csc"],
-            "full_version": row["full_version"],
-            "firmware_release_id": row["id"],
-            "artifact": path,
-            "sha256": artifact["sha256"],
-            "completed_at": utc_now().isoformat(),
-        }
-    )
 
 
 def _resolve_target_ids(
@@ -283,12 +258,6 @@ def _run_discover(database: Database, config: AppConfig, args: argparse.Namespac
                     try:
                         path = download_release(database, config, backend, item.release_id)
                         print(f"VERIFIED {path}")
-                        row = database.get_release(item.release_id)
-                        if row is None:
-                            raise KeyError(item.release_id)
-                        _append_completed_metadata(
-                            database, config, metadata_index, row, path
-                        )
                         if config.download.automatic_extract:
                             manifest = extract_release(database, config, item.release_id)
                             print(f"EXTRACTED manifest={manifest}")
@@ -426,9 +395,6 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         path = download_release(database, config, backend, str(row["id"]))
                         print(f"VERIFIED {path}")
-                        _append_completed_metadata(
-                            database, config, metadata_index, row, path
-                        )
                 return 0
             if args.command == "extract":
                 with ProcessLock(config.paths.state / "jayspray.lock"):

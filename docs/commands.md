@@ -82,9 +82,8 @@ space, writes `firmware.zip.partial`, accepts only successful backend completion
 structure and every member CRC, computes SHA-256, and atomically renames the file. Repeating
 an already cataloged release returns the verified artifact rather than downloading it again.
 
-When `[metadata] append_completed = true`, a verified result is appended and indexed before
-the next model is considered. This is supported only for the documented JSONL record format;
-keep it false for a different or not-yet-confirmed schema.
+Download alone does not write the extraction-derived metadata record. The local artifact
+catalog still prevents a second regional download before extraction occurs.
 
 ## Extraction
 
@@ -96,6 +95,10 @@ The command extracts an already verified decrypted ZIP. It rejects absolute/trav
 paths, backslash paths, links, devices, FIFOs, excessive sizes, too many members, and
 suspicious compression ratios. `manifest.json` catalogs all output and identifies common
 AP, BL, CP, CSC, HOME_CSC, USERDATA, and nested `.tar.md5` members. It never flashes a phone.
+
+When `metadata.append_completed = true`, extraction also writes the exact keyed-object shape
+shown in `example_metadata.json`. Evidence present in the extraction tree is parsed; fields
+inside partition images that have not been unpacked remain `null` or explicitly missing.
 
 ## Search, show, and status
 
@@ -115,17 +118,18 @@ run, artifact, source, failure, and disk information.
 ```toml
 [metadata]
 path = "/srv/catalog/metadata.json"
-append_completed = false
+append_completed = true
 ```
 
-The path must be absolute and point to a non-symlink regular file. The first run scans for
-`SM-...` model tokens and caches them in SQLite. A growing file is indexed incrementally;
-replacement, truncation, or same-size modification causes a safe rebuild. A missing file is
-an error rather than a fail-open download.
+The default is `/var/lib/jayspray/metadata.json`; replace the path to use an existing file.
+The path must be absolute and cannot be a symlink. With append enabled, a missing file starts
+as `{}` and every extracted release is atomically added under
+`MODEL/ANDROID_VERSION/BUILD`. The file must be a valid top-level JSON object matching
+`example_metadata.json`; invalid members, arrays, duplicate models, and incomplete JSON are
+not modified. With append disabled, a missing file fails closed.
 
-JSONL appending writes `model`, `region`, `full_version`, `firmware_release_id`, `artifact`,
-`sha256`, `completed_at`, and `source`. Top-level JSON arrays and custom JSON structures are
-read-only until a matching writer is implemented for their exact schema.
+The model cache is stored in SQLite. Growing files are scanned incrementally with overlap;
+replacement, truncation, or same-size modification causes a rebuild.
 
 ## Exit status
 

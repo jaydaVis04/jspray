@@ -116,6 +116,7 @@ def test_model_region_targets_merge_source_provenance(database: Database) -> Non
         detail_url=None,
         model="SM-S928U1",
         sales_csc="XAA",
+        android_version="14",
         source_updated_date="2026-08-21",
     )
     first = database.upsert_target_observation(
@@ -132,4 +133,6 @@ def test_model_region_targets_merge_source_provenance(database: Database) -> Non
     assert first.target_id == second.target_id
     assert second.source_count == 2
     assert database.target_sources(first.target_id) == ["samfrew", "sammobile"]
-    assert len(database.search_targets("SM-S928U1", csc="xaa")) == 1
+    targets = database.search_targets("SM-S928U1", csc="xaa")
+    assert len(targets) == 1
+    assert targets[0]["android_version"] == "14"
