@@ -10,7 +10,7 @@ bounded concurrent indexes
         -> Samsung latest-version resolution
         -> sequential FUS download/decryption
         -> ZIP/CRC/SHA-256 verification
-        -> guarded extraction and manifest
+        -> guarded extraction, manifest, and keyed metadata record
 ```
 
 Python owns adapters, policy, SQLite, scheduling, subprocess isolation, verification,
@@ -36,6 +36,12 @@ is explicit and isolated.
 The external metadata cache stores unique models and file fingerprint/offset in SQLite. The
 first scan is linear in file size. Appends scan only new bytes and membership checks use an
 indexed query. Replacement, truncation, or rewrite rebuilds the cache to avoid stale models.
+
+Metadata records are added only after extraction. The writer validates top-level members
+without loading the million-line object into memory, locks the source, writes a restrictive
+temporary sibling, fsyncs it, verifies the original inode is unchanged, and atomically
+replaces the catalog. Its record analyzer uses Android properties and known file names when
+present; missing partition evidence stays null rather than being inferred.
 
 ## Restart and security
 

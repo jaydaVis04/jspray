@@ -9,6 +9,10 @@ state = "/var/tmp/samsung-fw-sync-live/state"
 sources = ["samfrew", "sammobile"]
 lookback_days = 21
 
+[metadata]
+path = "/var/tmp/samsung-fw-sync-live/metadata.json"
+append_completed = true
+
 [download]
 automatic = false
 automatic_extract = false

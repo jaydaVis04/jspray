@@ -21,6 +21,7 @@ Indexes are metadata-only. Website downloads, credentials, GUI automation, CAPTC
 paywall bypass, anti-bot evasion, and device flashing are out of scope. SamFW remains disabled
 while its public page denies ordinary HTTP access.
 
-External metadata scanning is format-tolerant and cached. Automatic mutation is opt-in and
-currently limited to a validated JSONL record shape. A different supplied schema requires a
-matching writer before append is enabled.
+External metadata scanning is format-tolerant and cached. The default append writer uses the
+validated top-level keyed-object schema in `example_metadata.json`; users select another
+catalog by changing its path. Extraction-derived values are evidence-based, and unavailable
+partition fields remain null or explicitly missing.

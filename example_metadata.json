@@ -1,0 +1,34 @@
+{
+    "SM-S928U1/14/S928U1UES4AXH1": {
+        "abi": "arm64-v8a",
+        "android_version": "14",
+        "build": "S928U1UES4AXH1",
+        "libc_md5": "97e00000000000000000000000000000",
+        "model": "SM-S928U1",
+        "rom_path": "/var/lib/jayspray/downloads/SM-S928U1/firmware.zip",
+        "rom_paths": [
+            "/var/lib/jayspray/downloads/SM-S928U1/firmware.zip"
+        ],
+        "vndk": "34",
+        "com_android_runtime_missing": false,
+        "vndk_missing": false,
+        "sqlite_source": "partitions/system/system/lib64/libsqlite.so",
+        "linker_source": "partitions/system/system/bin/linker64",
+        "sqlite_md5": "00000000000000000000000000000000",
+        "linker_md5": "00000000000000000000000000000000",
+        "libril_source": "partitions/vendor/lib64/libril.so",
+        "modem_missing": false,
+        "vendor_sdk": "34",
+        "libril_sem_missing": true,
+        "date": "1722384000",
+        "build_security_patch": "2024-08-01",
+        "vendor_security_patch": "2024-08-01",
+        "hardware_egl": "adreno",
+        "hardware_chipname": "example-chip",
+        "vendor_rild_libpath": "/vendor/lib64/libsec-ril.so",
+        "libsec_ril_source": "partitions/vendor/lib64/libsec-ril.so",
+        "libsec_ril_md5": "00000000000000000000000000000000",
+        "framework_jar_source": "partitions/system/system/framework/framework.jar",
+        "framework_jar_md5": "00000000000000000000000000000000"
+    }
+}

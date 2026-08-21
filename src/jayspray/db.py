@@ -211,8 +211,9 @@ class Database:
                 self.connection.execute(
                     """INSERT INTO firmware_target(
                          id, model, sales_csc, device_name, country, region, carrier,
-                         first_discovered_at, last_observed_at, created_at, updated_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         android_version, first_discovered_at, last_observed_at,
+                         created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         target_id,
                         model,
@@ -221,6 +222,7 @@ class Database:
                         observation.country,
                         observation.region,
                         observation.carrier,
+                        observation.android_version,
                         observed,
                         observed,
                         observed,
@@ -234,13 +236,16 @@ class Database:
                     """UPDATE firmware_target SET
                          device_name = COALESCE(device_name, ?),
                          country = COALESCE(country, ?), region = COALESCE(region, ?),
-                         carrier = COALESCE(carrier, ?), last_observed_at = ?, updated_at = ?
+                         carrier = COALESCE(carrier, ?),
+                         android_version = COALESCE(android_version, ?),
+                         last_observed_at = ?, updated_at = ?
                        WHERE id = ?""",
                     (
                         observation.device_name,
                         observation.country,
                         observation.region,
                         observation.carrier,
+                        observation.android_version,
                         observed,
                         observed,
                         target_id,

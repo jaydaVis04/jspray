@@ -16,6 +16,7 @@ def test_committed_project_files_do_not_contain_local_identity() -> None:
             "THIRD_PARTY_NOTICES.md",
             "LICENSE",
             "config.example.toml",
+            "example_metadata.json",
             "pyproject.toml",
         )
     ]

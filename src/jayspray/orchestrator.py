@@ -22,6 +22,7 @@ from jayspray.extract import (
 )
 from jayspray.identity import full_version_components
 from jayspray.logging import log_event
+from jayspray.metadata_catalog import build_catalog_entry
 from jayspray.metadata_index import ExternalMetadataIndex
 from jayspray.models import FirmwareObservation, ProbeResult, ReleaseState, TargetObservation
 from jayspray.sources.base import FirmwareSource
@@ -53,7 +54,13 @@ class TargetDiscoveryResult:
     dry_run: bool = False
 
 
-def _official_observation(model: str, csc: str, full_version: str) -> FirmwareObservation:
+def _official_observation(
+    model: str,
+    csc: str,
+    full_version: str,
+    *,
+    android_version: str | None = None,
+) -> FirmwareObservation:
     parts = full_version_components(full_version)
     if len(parts) < 3:
         raise ValueError("Samsung history returned a version without AP/CSC/CP components")
@@ -69,6 +76,7 @@ def _official_observation(model: str, csc: str, full_version: str) -> FirmwareOb
         cp_version=parts[2],
         data_version=parts[3] if len(parts) > 3 else None,
         full_version=full_version,
+        android_version=android_version,
         download_status="official_samsung_history",
     )
 
@@ -159,8 +167,14 @@ def discover(
 
         cutoff = datetime.now(UTC).date() - timedelta(days=config.discovery.lookback_days)
         metadata_index = None
-        if config.metadata.path is not None:
-            metadata_index = ExternalMetadataIndex(target, config.metadata.path)
+        if config.metadata.path is not None and (
+            config.metadata.path.exists() or not dry_run
+        ):
+            metadata_index = ExternalMetadataIndex(
+                target,
+                config.metadata.path,
+                create_if_missing=config.metadata.append_completed,
+            )
             metadata_index.refresh()
         eligible: list[TargetObservation] = []
         for item in ordered:
@@ -262,7 +276,16 @@ def probe(
             if not history:
                 raise RuntimeError("Samsung returned no firmware version")
             full_version = history[0]
-            merged = database.upsert_observation(_official_observation(model, csc, full_version))
+            merged = database.upsert_observation(
+                _official_observation(
+                    model,
+                    csc,
+                    full_version,
+                    android_version=(
+                        str(row["android_version"]) if row["android_version"] else None
+                    ),
+                )
+            )
             database.set_resolved_version(
                 merged.release_id, full_version, sales_csc=csc
             )
@@ -467,4 +490,11 @@ def extract_release(database: Database, config: AppConfig, release_id: str) -> P
         raise KeyError(release_id)
     if current["state"] != ReleaseState.EXTRACTED.value:
         database.set_state(release_id, ReleaseState.EXTRACTED)
+    if config.metadata.path is not None and config.metadata.append_completed:
+        catalog = ExternalMetadataIndex(
+            database, config.metadata.path, create_if_missing=True
+        )
+        catalog.refresh()
+        catalog_entry = build_catalog_entry(destination, row, Path(artifact["path"]))
+        catalog.append_catalog_entry(catalog_entry.key, catalog_entry.record)
     return manifest_path

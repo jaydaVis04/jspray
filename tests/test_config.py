@@ -32,6 +32,8 @@ lookback_days = 21
     loaded = load_config(config)
     assert loaded.discovery.lookback_days == 21
     assert loaded.discovery.sources == ("samfrew", "sammobile")
+    assert loaded.metadata.path == Path("/var/lib/jayspray/metadata.json")
+    assert loaded.metadata.append_completed
 
 
 def test_rejects_relative_storage_path(tmp_path: Path) -> None:
@@ -57,8 +59,22 @@ def test_rejects_invalid_downloader_digest(tmp_path: Path) -> None:
 
 def test_metadata_append_requires_a_path(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
-    config.write_text("[metadata]\nappend_completed = true\n", encoding="utf-8")
+    config.write_text(
+        '[metadata]\npath = ""\nappend_completed = true\n', encoding="utf-8"
+    )
     with pytest.raises(ConfigurationError, match=r"requires metadata\.path"):
+        load_config(config)
+
+
+def test_automatic_metadata_append_requires_automatic_extraction(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[download]\nautomatic = true\nautomatic_extract = false\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ConfigurationError, match=r"requires download\.automatic_extract"
+    ):
         load_config(config)
 
 

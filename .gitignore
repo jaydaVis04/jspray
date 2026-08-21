@@ -27,5 +27,6 @@ Samsung Firmware Discovery and Download Pipeline Prompt.md
 .env.*
 !.env.example
 /config.toml
+/metadata.json
 secrets.env
 .DS_Store

@@ -20,13 +20,13 @@ retries = 3
 retry_base_seconds = 1.0
 request_delay_seconds = 1.0
 max_response_bytes = 5242880
-user_agent = "JAYSPRAY/0.3.0"
+user_agent = "JAYSPRAY/0.4.0"
 
 [metadata]
-# Optional: existing catalog scanned and cached by model before Samsung resolution/download.
-# path = "/var/lib/jayspray/INCLUDE_YOUR_metadata.json"
-# Enable only for the documented JSONL schema. Custom/top-level-array JSON is scan-only.
-append_completed = false
+# Replace this path with an existing catalog to use it instead of the default file.
+path = "/var/lib/jayspray/metadata.json"
+# Successful extraction atomically adds the example_metadata.json record shape.
+append_completed = true
 
 [download]
 automatic = false

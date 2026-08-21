@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -46,6 +47,7 @@ def target(source: str, csc: str, *, age_days: int = 0) -> TargetObservation:
         detail_url=None,
         model="SM-S928U1",
         sales_csc=csc,
+        android_version="14",
         source_updated_date=observed.date().isoformat(),
         observed_at=observed,
     )
@@ -157,9 +159,17 @@ def test_download_is_idempotent_then_extracts(
     assert backend.download_calls == [("SM-S928U1", "XAA", XAA_VERSION)]
     assert download_release(database, app_config, backend, resolved.release_id) == firmware
     assert len(backend.download_calls) == 1
-    manifest = extract_release(database, app_config, resolved.release_id)
+    metadata_path = app_config.paths.state / "metadata.json"
+    extract_config = replace(
+        app_config,
+        metadata=MetadataConfig(path=metadata_path, append_completed=True),
+    )
+    manifest = extract_release(database, extract_config, resolved.release_id)
     assert manifest.is_file()
     assert database.get_release(resolved.release_id)["state"] == "EXTRACTED"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert list(metadata) == ["SM-S928U1/14/S928U1UES4AXH1"]
+    assert metadata["SM-S928U1/14/S928U1UES4AXH1"]["rom_path"] == str(firmware)
 
 
 def test_completed_zip_is_reconciled_after_database_commit_interruption(

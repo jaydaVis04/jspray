@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from jayspray.config import AppConfig, DownloadConfig, PathsConfig
+from jayspray.config import AppConfig, DownloadConfig, MetadataConfig, PathsConfig
 from jayspray.db import Database
 
 
@@ -19,6 +19,7 @@ def app_config(tmp_path: Path) -> AppConfig:
             state=tmp_path / "state",
         ),
         download=DownloadConfig(minimum_free_bytes=1),
+        metadata=MetadataConfig(path=None, append_completed=False),
     )
 
 
