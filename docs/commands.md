@@ -7,9 +7,8 @@ jayspray --config /etc/jayspray/config.toml <command> [options]
 ```
 
 If `--config` is omitted, JAYSPRAY uses `/etc/jayspray/config.toml` or the absolute path in
-`JAYSPRAY_CONFIG`. Samsung requires a model and sales CSC to query firmware history, so add
-at least one enabled `[[targets]]` entry before discovery. CSC identifies a request route;
-canonical releases are deduplicated by model + PDA/AP.
+`JAYSPRAY_CONFIG`. Global discovery needs no configured device targets. Public index rows
+supply CSC request routes; canonical releases are deduplicated by model + PDA/AP.
 
 ## Safe first run
 
@@ -27,10 +26,10 @@ only with `download` or with `sync` when `download.automatic = true`.
 
 | Command | Samsung metadata request | Catalog write | Firmware download | Extraction |
 | --- | ---: | ---: | ---: | ---: |
-| `discover` | Yes | Yes | No | No |
-| `discover --dry-run` | Yes | No | No | No |
-| `sync --dry-run` | Yes | No | No | No |
-| `sync` | Yes | Yes | Only if configured | Only if configured |
+| `discover` | Public indexes | Yes | No | No |
+| `discover --dry-run` | Public indexes | No | No | No |
+| `sync --dry-run` | Public indexes | No | No | No |
+| `sync` | Indexes + Samsung resolution if automatic | Yes | Only if configured | Only if configured |
 | `inspect` | Yes | No | No | No |
 | `probe` | Yes | May update resolution | No | No |
 | `backfill` | Yes | Yes | No | No |
@@ -40,8 +39,8 @@ only with `download` or with `sync` when `download.automatic = true`.
 
 ## Discovery and synchronization
 
-`discover` queries bounded official Samsung history for enabled targets, normalizes the
-results, merges identical model + PDA releases across CSC routes, and updates SQLite.
+`discover` queries bounded newest pages from enabled public indexes, normalizes the results,
+merges identical model + PDA releases across sources and CSC routes, and updates SQLite.
 
 ```bash
 jayspray discover
@@ -49,8 +48,9 @@ jayspray discover --limit 10
 jayspray discover --dry-run
 ```
 
-`--limit` bounds normalized candidates across the run. Dry run uses an in-memory snapshot:
-it contacts Samsung but does not persist database or firmware-file changes.
+`--limit` selects the first N newest unique model/PDA candidates while retaining matching
+cross-source observations. Dry run uses an in-memory snapshot and does not persist database
+or firmware-file changes.
 
 `sync` performs discovery and then applies automatic download/extraction policy:
 
@@ -76,15 +76,16 @@ CSC/CP components are byte-identical; their exact version tuples remain separate
 
 ## Probe downloadability
 
-`probe` checks whether cataloged exact versions still appear in current Samsung history. It
-does not retrieve the multi-gigabyte payload:
+`probe` tries each indexed CSC route until the cataloged PDA is resolved to an exact Samsung
+history version. It does not retrieve the multi-gigabyte payload:
 
 ```bash
 jayspray probe --first 10
 ```
 
-An `[OK]` result means the release is resolvable through the official Samsung path. `[FAIL]`
-includes a sanitized reason and produces a nonzero result when any selected item fails.
+An `[OK]` result stores the exact AP/CSC/CP version and means the release is resolvable through
+the official Samsung path. `[FAIL]` includes a sanitized reason and produces a nonzero result
+when any selected item fails.
 
 ## Download
 
@@ -95,8 +96,9 @@ jayspray download --first 1
 jayspray download --id <firmware-id>
 ```
 
-Before starting, JAYSPRAY prints the number of packages, model, route CSC, exact version, and
-known size. It checks free space, writes `firmware.zip.partial`, validates the resulting ZIP,
+If needed, `download` first performs the same metadata-only resolution as `probe`. It then
+prints the number of packages, model, route CSC, exact version, and known size. It checks free
+space, writes `firmware.zip.partial`, validates the resulting ZIP,
 computes SHA-256, atomically renames the file, and records the artifact. Repeating the command
 returns the verified existing artifact instead of downloading it again.
 

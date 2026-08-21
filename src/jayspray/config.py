@@ -30,8 +30,21 @@ class TargetConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class HttpConfig:
+    timeout_seconds: int = 30
+    retries: int = 3
+    retry_base_seconds: float = 1.0
+    request_delay_seconds: float = 1.0
+    max_response_bytes: int = 5 * 1024**2
+    user_agent: str = "JAYSPRAY/0.2.0 (+https://github.com/jaydaVis04/JAYSPRAY)"
+
+
+@dataclass(frozen=True, slots=True)
 class DiscoveryConfig:
+    sources: tuple[str, ...] = ("samfrew", "sammobile")
+    pages_per_source: int = 1
     history_limit_per_target: int = 5
+    http: HttpConfig = field(default_factory=HttpConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +121,14 @@ def _number(value: object, default: float, name: str) -> float:
     return float(value)
 
 
+def _string(value: object, default: str, name: str) -> str:
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise ConfigurationError(f"{name} must be a string")
+    return value
+
+
 def _optional_sha256(value: object) -> str | None:
     if value is None or value == "":
         return None
@@ -120,6 +141,21 @@ def _optional_sha256(value: object) -> str | None:
             "download.samloader_sha256 must be a 64-character hex digest"
         ) from exc
     return value.lower()
+
+
+def _sources(value: object, default: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return default
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
+        raise ConfigurationError("discovery.sources must be a non-empty array of strings")
+    normalized = tuple(item.strip().lower() for item in value)
+    supported = {"samfrew", "samfw", "sammobile"}
+    unknown = set(normalized) - supported
+    if unknown:
+        raise ConfigurationError(f"unsupported discovery source(s): {', '.join(sorted(unknown))}")
+    if len(set(normalized)) != len(normalized):
+        raise ConfigurationError("discovery.sources must not contain duplicates")
+    return normalized
 
 
 def load_config(path: Path | None = None) -> AppConfig:
@@ -136,6 +172,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     paths = _section(data, "paths")
     download = _section(data, "download")
     discovery = _section(data, "discovery")
+    http = _section(data, "http")
     extract = _section(data, "extract")
     raw_targets = data.get("targets", [])
     if not isinstance(raw_targets, list):
@@ -171,11 +208,47 @@ def load_config(path: Path | None = None) -> AppConfig:
         ),
         targets=tuple(targets),
         discovery=DiscoveryConfig(
+            sources=_sources(discovery.get("sources"), default.discovery.sources),
+            pages_per_source=_integer(
+                discovery.get("pages_per_source"),
+                default.discovery.pages_per_source,
+                "discovery.pages_per_source",
+            ),
             history_limit_per_target=_integer(
                 discovery.get("history_limit_per_target"),
                 default.discovery.history_limit_per_target,
                 "discovery.history_limit_per_target",
-            )
+            ),
+            http=HttpConfig(
+                timeout_seconds=_integer(
+                    http.get("timeout_seconds"),
+                    default.discovery.http.timeout_seconds,
+                    "http.timeout_seconds",
+                ),
+                retries=_integer(
+                    http.get("retries"), default.discovery.http.retries, "http.retries"
+                ),
+                retry_base_seconds=_number(
+                    http.get("retry_base_seconds"),
+                    default.discovery.http.retry_base_seconds,
+                    "http.retry_base_seconds",
+                ),
+                request_delay_seconds=_number(
+                    http.get("request_delay_seconds"),
+                    default.discovery.http.request_delay_seconds,
+                    "http.request_delay_seconds",
+                ),
+                max_response_bytes=_integer(
+                    http.get("max_response_bytes"),
+                    default.discovery.http.max_response_bytes,
+                    "http.max_response_bytes",
+                ),
+                user_agent=_string(
+                    http.get("user_agent"),
+                    default.discovery.http.user_agent,
+                    "http.user_agent",
+                ),
+            ),
         ),
         download=DownloadConfig(
             automatic=_boolean(
@@ -233,6 +306,11 @@ def load_config(path: Path | None = None) -> AppConfig:
     )
     for value, name in (
         (cfg.discovery.history_limit_per_target, "discovery.history_limit_per_target"),
+        (cfg.discovery.pages_per_source, "discovery.pages_per_source"),
+        (cfg.discovery.http.timeout_seconds, "http.timeout_seconds"),
+        (cfg.discovery.http.retry_base_seconds, "http.retry_base_seconds"),
+        (cfg.discovery.http.request_delay_seconds, "http.request_delay_seconds"),
+        (cfg.discovery.http.max_response_bytes, "http.max_response_bytes"),
         (cfg.download.concurrency, "download.concurrency"),
         (cfg.download.connections_per_file, "download.connections_per_file"),
         (cfg.download.minimum_free_bytes, "download.minimum_free_bytes"),
@@ -243,6 +321,20 @@ def load_config(path: Path | None = None) -> AppConfig:
         (cfg.extract.max_compression_ratio, "extract.max_compression_ratio"),
     ):
         _positive(value, name)
+    if cfg.discovery.http.retries < 0 or cfg.discovery.http.retries > 10:
+        raise ConfigurationError("http.retries must be between 0 and 10")
+    if cfg.discovery.pages_per_source > 100:
+        raise ConfigurationError("discovery.pages_per_source must not exceed 100")
+    if cfg.discovery.http.timeout_seconds > 600:
+        raise ConfigurationError("http.timeout_seconds must not exceed 600")
+    if cfg.discovery.http.max_response_bytes > 20 * 1024**2:
+        raise ConfigurationError("http.max_response_bytes must not exceed 20971520")
+    if "\n" in cfg.discovery.http.user_agent or "\r" in cfg.discovery.http.user_agent:
+        raise ConfigurationError("http.user_agent must be a single line")
+    if not cfg.discovery.http.user_agent.strip():
+        raise ConfigurationError("http.user_agent must not be empty")
+    if len(cfg.discovery.http.user_agent) > 256:
+        raise ConfigurationError("http.user_agent must not exceed 256 characters")
     if cfg.download.concurrency != 1:
         raise ConfigurationError("download.concurrency must be 1 in this release")
     if not Path(cfg.download.samloader_executable).is_absolute():

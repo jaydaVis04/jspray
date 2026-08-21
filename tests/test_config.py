@@ -44,6 +44,7 @@ history_limit_per_target = 7
         ("SM-S928U1", "EUX", False),
     ]
     assert loaded.discovery.history_limit_per_target == 7
+    assert loaded.discovery.sources == ("samfrew", "sammobile")
 
 
 def test_rejects_relative_storage_path(tmp_path: Path) -> None:
@@ -85,17 +86,26 @@ def test_rejects_invalid_downloader_digest(tmp_path: Path) -> None:
         load_config(config)
 
 
+def test_rejects_unknown_or_duplicate_discovery_sources(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('[discovery]\nsources = ["samfrew", "samfrew"]\n', encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="must not contain duplicates"):
+        load_config(config)
+    config.write_text('[discovery]\nsources = ["unknown"]\n', encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="unsupported discovery source"):
+        load_config(config)
+
+
 @pytest.mark.parametrize(
     ("body", "message"),
     [
         ('[download]\nautomatic = "false"\n', "must be true or false"),
-        ('[download]\nconcurrency = true\n', "must be an integer"),
+        ("[download]\nconcurrency = true\n", "must be an integer"),
+        ('[http]\nuser_agent = ["bad"]\n', "must be a string"),
         ('logging_level = "VERBOSE"\n', "logging_level must be"),
     ],
 )
-def test_rejects_unsafe_configuration_coercions(
-    tmp_path: Path, body: str, message: str
-) -> None:
+def test_rejects_unsafe_configuration_coercions(tmp_path: Path, body: str, message: str) -> None:
     config = tmp_path / "config.toml"
     config.write_text(body, encoding="utf-8")
     with pytest.raises(ConfigurationError, match=message):

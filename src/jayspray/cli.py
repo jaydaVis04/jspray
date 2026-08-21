@@ -13,7 +13,14 @@ from jayspray.config import AppConfig, load_config
 from jayspray.db import Database
 from jayspray.lock import ProcessLock
 from jayspray.logging import configure_logging, redact_text
-from jayspray.orchestrator import discover, download_release, extract_release, probe
+from jayspray.orchestrator import (
+    discover,
+    discover_targets,
+    download_release,
+    extract_release,
+    probe,
+)
+from jayspray.sources import configured_sources
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -71,10 +78,11 @@ def _parser() -> argparse.ArgumentParser:
 
 def _print_release(row: Any, database: Database) -> None:
     routes = database.route_observations(str(row["id"]))
+    sources = database.sources_for_release(str(row["id"]))
     print(
         f"{str(row['id'])[:8]} {row['model']} {row['sales_csc']} {row['ap_version']} "
         f"state={row['state']} full_version={row['full_version'] or '-'} "
-        f"Samsung_routes={len(routes)}"
+        f"sources={'+'.join(sources)} routes={len(routes)}"
     )
 
 
@@ -92,11 +100,10 @@ def _validate_count(value: int | None, name: str) -> int:
 
 def _run_discover(database: Database, config: AppConfig, args: argparse.Namespace) -> int:
     limit = None if args.limit is None else _validate_count(args.limit, "--limit")
-    backend = SamloaderBackend(config.download)
     result = discover(
         database,
         config,
-        backend,
+        configured_sources(config),
         limit=limit,
         dry_run=bool(args.dry_run),
         command=str(args.command),
@@ -104,12 +111,16 @@ def _run_discover(database: Database, config: AppConfig, args: argparse.Namespac
     label = "DRY RUN" if result.dry_run else "DISCOVERY"
     print(
         f"{label}: candidates={result.candidates} new={result.new_releases} "
-        f"matched={result.matched_observations} upstream=Samsung"
+        f"matched={result.matched_observations} sources={','.join(config.discovery.sources)}"
     )
     for item in result.releases:
-        print(f"{item['outcome']:19} {item['model']} {item['csc']} {item['version']}")
-    for target, error in result.target_errors.items():
-        print(f"TARGET FAIL {target}: {redact_text(error)}", file=sys.stderr)
+        print(
+            f"{item['outcome']:19} {item['model']} {item['csc']} {item['version']} "
+            f"source={item['source']} observed_by={'+'.join(item['sources'])} "
+            f"observations={item['source_count']}"
+        )
+    for source, error in result.source_errors.items():
+        print(f"SOURCE FAIL {source}: {redact_text(error)}", file=sys.stderr)
     if args.command == "sync":
         if result.dry_run:
             new_items = list(
@@ -131,7 +142,8 @@ def _run_discover(database: Database, config: AppConfig, args: argparse.Namespac
                         "reason=already_cataloged"
                     )
             for item in new_items:
-                print(f"WOULD QUEUE {item['model']} {item['csc']} {item['version']}")
+                print(f"WOULD RESOLVE {item['model']} {item['csc']} PDA={item['version']}")
+                print(f"WOULD QUEUE {item['model']} {item['csc']} PDA={item['version']}")
                 if config.download.automatic:
                     print(f"WOULD DOWNLOAD {item['model']} {item['csc']} {item['version']}")
                 else:
@@ -147,12 +159,29 @@ def _run_discover(database: Database, config: AppConfig, args: argparse.Namespac
             )
         elif config.download.automatic:
             failures = 0
+            backend = SamloaderBackend(config.download)
             new_release_ids = list(
                 dict.fromkeys(
                     item["id"] for item in result.releases if item["outcome"] == "new_release"
                 )
             )
+            resolution = probe(
+                database,
+                backend,
+                first=max(1, len(new_release_ids)),
+                release_ids=[str(item) for item in new_release_ids],
+            )
+            resolvable_ids = {item.release_id for item in resolution if item.resolvable}
+            for probe_item in resolution:
+                tag = "RESOLVED" if probe_item.resolvable else "RESOLVE FAIL"
+                print(
+                    f"{tag} {probe_item.model} {probe_item.sales_csc} "
+                    f"{probe_item.version} {probe_item.reason}"
+                )
             for release_id in new_release_ids:
+                if str(release_id) not in resolvable_ids:
+                    failures += 1
+                    continue
                 try:
                     path = download_release(database, config, backend, str(release_id))
                     print(f"VERIFIED {path}")
@@ -173,8 +202,7 @@ def _run_discover(database: Database, config: AppConfig, args: argparse.Namespac
                     )
             if failures:
                 return 1
-    enabled_targets = len([target for target in config.targets if target.enabled])
-    return 1 if enabled_targets and len(result.target_errors) == enabled_targets else 0
+    return 1 if len(result.source_errors) == len(config.discovery.sources) else 0
 
 
 def _status(database: Database, config: AppConfig) -> None:
@@ -246,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
                             None if args.limit is None else _validate_count(args.limit, "--limit")
                         )
                         backend = SamloaderBackend(config.download)
-                        result = discover(
+                        result = discover_targets(
                             database,
                             config,
                             backend,
@@ -297,6 +325,22 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"About to download {len(rows)} firmware package(s), sequentially.")
                 with ProcessLock(config.paths.state / "jayspray.lock"):
                     for row in rows:
+                        if not row["full_version"]:
+                            resolution = probe(
+                                database,
+                                backend,
+                                first=1,
+                                release_ids=[str(row["id"])],
+                            )[0]
+                            if not resolution.resolvable:
+                                raise RuntimeError(
+                                    f"cannot resolve {row['model']} PDA={row['ap_version']}: "
+                                    f"{resolution.reason}"
+                                )
+                            resolved_row = database.get_release(str(row["id"]))
+                            if resolved_row is None:
+                                raise KeyError(resolution.release_id)
+                            row = resolved_row
                         print(
                             f"DOWNLOAD {row['model']} {row['sales_csc']} "
                             f"{row['full_version'] or row['ap_version']} "
@@ -334,6 +378,7 @@ def main(argv: list[str] | None = None) -> int:
                     json.dumps(
                         {
                             "release": dict(show_row),
+                            "observed_by": database.sources_for_release(args.firmware_id),
                             "Samsung_routes": database.route_observations(args.firmware_id),
                             "artifacts": artifacts,
                         },

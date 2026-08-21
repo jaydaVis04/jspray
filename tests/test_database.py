@@ -103,3 +103,14 @@ def test_watch_target_error_is_redacted_before_persistence(database: Database) -
     target = database.status_summary()["targets"][0]
     assert "private-value" not in target["last_error"]
     assert "REDACTED" in target["last_error"]
+
+
+def test_source_checkpoint_tracks_success_and_redacts_failure(database: Database) -> None:
+    database.update_source_checkpoint("samfrew", successful=True, latest_record_key="record-1")
+    database.update_source_checkpoint(
+        "samfrew", successful=False, error="Authorization: Bearer private-value"
+    )
+    source = database.status_summary()["sources"][0]
+    assert source["latest_record_key"] == "record-1"
+    assert source["last_success_at"] is not None
+    assert "private-value" not in source["last_error"]

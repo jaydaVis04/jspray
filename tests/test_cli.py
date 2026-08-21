@@ -9,6 +9,8 @@ from jayspray import cli
 from jayspray.backend.base import SamsungBackend
 from jayspray.config import AppConfig
 from jayspray.db import Database
+from jayspray.models import FirmwareObservation
+from jayspray.sources.base import FirmwareSource, SourcePage
 
 PDA = "S928U1UES4AXH1"
 
@@ -27,13 +29,34 @@ class DryRunBackend(SamsungBackend):
         raise AssertionError("dry run must not download")
 
 
+class DryRunSource(FirmwareSource):
+    name = "fixture"
+
+    def fetch_page(self, page: int = 0) -> SourcePage:
+        del page
+        return SourcePage(
+            tuple(
+                FirmwareObservation(
+                    source="fixture",
+                    source_record_key=csc,
+                    source_url="https://example.invalid/latest",
+                    detail_url=None,
+                    model="SM-S928U1",
+                    sales_csc=csc,
+                    ap_version=PDA,
+                )
+                for csc in ("XAA", "EUX")
+            )
+        )
+
+
 def test_sync_dry_run_explains_queue_duplicate_and_download_skip(
     database: Database,
     app_config: AppConfig,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(cli, "SamloaderBackend", lambda _config: DryRunBackend())
+    monkeypatch.setattr(cli, "configured_sources", lambda _config: (DryRunSource(),))
     args = argparse.Namespace(command="sync", limit=None, dry_run=True)
 
     assert cli._run_discover(database, app_config, args) == 0

@@ -371,7 +371,9 @@ class Database:
                 (target.value, _now(), _now(), release_id),
             )
 
-    def set_resolved_version(self, release_id: str, full_version: str) -> None:
+    def set_resolved_version(
+        self, release_id: str, full_version: str, *, sales_csc: str | None = None
+    ) -> None:
         parts = full_version.split("/")
         if len(parts) < 3:
             raise ValueError("resolved firmware version needs at least AP/CSC/CP")
@@ -384,11 +386,18 @@ class Database:
             data_version = parts[3] if len(parts) > 3 else row["data_version"]
             self.connection.execute(
                 """UPDATE firmware_release
-                   SET full_version = ?, csc_version = COALESCE(csc_version, ?),
-                       cp_version = COALESCE(cp_version, ?),
-                       data_version = COALESCE(data_version, ?), updated_at = ?
+                   SET full_version = ?, csc_version = ?, cp_version = ?, data_version = ?,
+                       sales_csc = COALESCE(?, sales_csc), updated_at = ?
                    WHERE id = ?""",
-                (full_version, parts[1], parts[2], data_version, _now(), release_id),
+                (
+                    full_version,
+                    parts[1],
+                    parts[2],
+                    data_version,
+                    sales_csc,
+                    _now(),
+                    release_id,
+                ),
             )
             current = ReleaseState(row["state"])
             if current == ReleaseState.DISCOVERED:
@@ -450,13 +459,14 @@ class Database:
     def route_observations(self, release_id: str) -> list[dict[str, Any]]:
         observations: list[dict[str, Any]] = []
         for row in self.connection.execute(
-            """SELECT sales_csc, full_version, first_seen_at
+            """SELECT source, sales_csc, full_version, first_seen_at
                FROM source_observation WHERE firmware_release_id = ? """
             "ORDER BY first_seen_at",
             (release_id,),
         ):
             observations.append(
                 {
+                    "source": row["source"],
                     "csc": row["sales_csc"],
                     "full_version": row["full_version"],
                     "first_observed": row["first_seen_at"],
@@ -475,16 +485,12 @@ class Database:
         if limit < 1 or limit > 10000:
             raise ValueError("limit must be between 1 and 10000")
         escaped_query = (
-            query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            if query
-            else None
+            query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") if query else None
         )
         model_pattern = f"%{escaped_query.upper()}%" if escaped_query else None
         name_pattern = f"%{escaped_query}%" if escaped_query else None
         escaped_pda = (
-            pda.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            if pda
-            else None
+            pda.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") if pda else None
         )
         pda_pattern = f"{escaped_pda.upper()}%" if escaped_pda else None
         normalized_csc = csc.upper() if csc else None
@@ -589,6 +595,44 @@ class Database:
         )
         self.connection.commit()
 
+    def update_source_checkpoint(
+        self,
+        source: str,
+        *,
+        successful: bool,
+        latest_record_key: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        from jayspray.logging import redact_text
+
+        now = _now()
+        safe_error = redact_text(error)[:2000] if error else None
+        self.connection.execute(
+            """INSERT INTO source_checkpoint(
+                 source, last_checked_at, last_success_at, latest_record_key,
+                 last_error, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source) DO UPDATE SET
+                 last_checked_at = excluded.last_checked_at,
+                 last_success_at = CASE WHEN ? THEN excluded.last_success_at
+                                        ELSE source_checkpoint.last_success_at END,
+                 latest_record_key = COALESCE(
+                     excluded.latest_record_key, source_checkpoint.latest_record_key
+                 ),
+                 last_error = excluded.last_error,
+                 updated_at = excluded.updated_at""",
+            (
+                source,
+                now,
+                now if successful else None,
+                latest_record_key,
+                safe_error,
+                now,
+                int(successful),
+            ),
+        )
+        self.connection.commit()
+
     def status_summary(self) -> dict[str, Any]:
         counts = {
             str(row["state"]): int(row["count"])
@@ -604,6 +648,14 @@ class Database:
                    FROM watch_target ORDER BY model, sales_csc"""
             )
         ]
+        sources = [
+            dict(row)
+            for row in self.connection.execute(
+                """SELECT source, last_checked_at, last_success_at,
+                          latest_record_key, last_error
+                   FROM source_checkpoint ORDER BY source"""
+            )
+        ]
         last_run = self.connection.execute(
             "SELECT * FROM run ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
@@ -614,6 +666,7 @@ class Database:
         )
         return {
             "states": counts,
+            "sources": sources,
             "targets": targets,
             "last_run": dict(last_run) if last_run else None,
             "unresolved_failures": failures,
