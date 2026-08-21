@@ -1,9 +1,9 @@
 [paths]
-database = "/tmp/samsung-fw-sync/database/firmware.db"
-downloads = "/tmp/samsung-fw-sync/downloads"
-extracted = "/tmp/samsung-fw-sync/extracted"
-cache = "/tmp/samsung-fw-sync/cache"
-state = "/tmp/samsung-fw-sync/state"
+database = "/var/tmp/samsung-fw-sync-live/database/firmware.db"
+downloads = "/var/tmp/samsung-fw-sync-live/downloads"
+extracted = "/var/tmp/samsung-fw-sync-live/extracted"
+cache = "/var/tmp/samsung-fw-sync-live/cache"
+state = "/var/tmp/samsung-fw-sync-live/state"
 
 [[targets]]
 model = "SM-S928U1"

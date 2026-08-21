@@ -1,6 +1,14 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:9c900dea9e8fb7e16277c179b555cc72d29a352dbc33cff48ad5a0412fd5bfc7
 
 WORKDIR /src
-COPY . /src
-RUN python -m pip install --no-cache-dir -e '.[dev]'
-CMD ["sh", "-c", "pytest -q && ruff check src tests && mypy src"]
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    MYPY_CACHE_DIR=/tmp/mypy-cache \
+    PATH=/home/app/venv/bin:$PATH \
+    RUFF_CACHE_DIR=/tmp/ruff-cache
+RUN useradd --create-home --uid 10001 app
+COPY --chown=app:app . /src
+RUN chown app:app /src
+USER app
+RUN python -m venv /home/app/venv \
+    && python -m pip install --no-cache-dir -e '.[dev]'
+CMD ["sh", "-c", "pytest -q -p no:cacheprovider && ruff check src tests && mypy src"]

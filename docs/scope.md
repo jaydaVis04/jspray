@@ -19,7 +19,7 @@ Discovery is driven by an explicit configured watch list of Samsung models and o
 probe CSCs. Bifrost cannot enumerate every model/CSC by itself; Samsung requires a CSC to
 perform the request. CSC is transport/provenance metadata here, not canonical identity.
 
-The canonical release identity requested by the operator is `normalized model + PDA/AP`.
+The canonical release identity is `normalized model + PDA/AP`.
 If XAA, EUX, and INS probes return the same PDA, they are recorded as three Samsung route
 observations of one canonical release and only one payload is queued. Their complete
 AP/CSC/CP tuples remain visible because same-PDA regional packages are not guaranteed to

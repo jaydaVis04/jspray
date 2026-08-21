@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from fwtool.config import AppConfig, DownloadConfig, PathsConfig, TargetConfig
-from fwtool.db import Database
+from jayspray.config import AppConfig, DownloadConfig, PathsConfig, TargetConfig
+from jayspray.db import Database
 
 
 @pytest.fixture

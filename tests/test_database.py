@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-from fwtool.db import Database
-from fwtool.models import FirmwareObservation, ReleaseState
+from jayspray.db import Database
+from jayspray.models import FirmwareObservation, ReleaseState
 
 
 def make_observation(csc: str, csc_component: str) -> FirmwareObservation:
@@ -80,3 +80,26 @@ def test_readonly_snapshot_does_not_create_missing_database(app_config) -> None:
     with Database.readonly_snapshot(app_config.paths.database) as snapshot:
         assert snapshot.list_releases() == []
     assert not app_config.paths.database.exists()
+
+
+def test_search_uses_literal_patterns_and_bounded_limit(database: Database) -> None:
+    release = database.upsert_observation(make_observation("XAA", "S928U1OYM4AXH1"))
+    assert [row["id"] for row in database.search("SM-S928", csc="xaa", pda="S928U1")] == [
+        release.release_id
+    ]
+    assert database.search("%") == []
+    with pytest.raises(ValueError, match="between 1 and 10000"):
+        database.search(limit=-1)
+
+
+def test_watch_target_error_is_redacted_before_persistence(database: Database) -> None:
+    database.update_watch_target(
+        "SM-S928U1",
+        "XAA",
+        enabled=True,
+        successful=False,
+        error="Authorization: Bearer private-value",
+    )
+    target = database.status_summary()["targets"][0]
+    assert "private-value" not in target["last_error"]
+    assert "REDACTED" in target["last_error"]

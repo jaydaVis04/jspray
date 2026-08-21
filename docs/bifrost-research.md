@@ -1,8 +1,8 @@
-# Phase 0 Bifrost research record
+# Bifrost research record
 
 Research date: 2026-08-21
 
-The operator cancelled all third-party firmware database integrations. This record covers
+All third-party firmware database integrations were cancelled. This record covers
 only the behavior that remains relevant: Bifrost and official Samsung infrastructure.
 See `docs/scope.md` for the authoritative scope.
 
@@ -38,13 +38,13 @@ The local `Bifrost/` checkout was inspected at commit
 - Current diagnostic code prints some authorization material, which a direct production
   headless fork would need to remove.
 
-## What “discovery” means with Bifrost/Samsung
+## What “discovery” means with Bifrost and Samsung
 
 Bifrost does not enumerate all Samsung devices, CSCs, or PDAs. It resolves versions for a
 supplied `model + CSC`. The production tool therefore accepts a configured list of models
 and probe CSCs. Each CSC query can return multiple exact AP/CSC/CP history strings.
 
-The operator wants PDA-oriented deduplication. Accordingly:
+The catalog uses PDA-oriented deduplication. Accordingly:
 
 - request key: `model + CSC` (required by Samsung)
 - observation key: `model + CSC + complete Samsung history version`
@@ -80,8 +80,8 @@ Decryption and extraction are separate. The backend produces the decrypted ZIP. 
 It catalogs AP, BL, CP, CSC, HOME_CSC, USERDATA, and nested `.tar.md5` members. It never
 flashes a device.
 
-## Remaining acceptance blocker
+## Live payload acceptance boundary
 
-Development is occurring on macOS. Docker is available for Linux verification, but a real
-multi-gigabyte firmware download must not start without an explicit operator confirmation
-and an adequate configured Linux storage target.
+A real multi-gigabyte firmware download must not start during ordinary verification. It
+requires an explicitly selected release, an adequate Linux storage target, and deliberate
+operator confirmation.

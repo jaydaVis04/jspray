@@ -47,6 +47,9 @@ SQLite runs with foreign keys, WAL, a busy timeout, explicit transactions, and m
 Canonical releases and source observations are distinct. Runs, failures, source
 checkpoints, artifacts, and queued work are durable.
 
+Migration SQL is packaged under `src/jayspray/migration_sql/` so installed wheels can apply
+it. Migrations run transactionally in lexical order and are append-only after release.
+
 State transitions are validated:
 
 `DISCOVERED -> RESOLVED -> QUEUED -> DOWNLOADING -> DOWNLOADED -> VERIFIED -> DECRYPTED -> EXTRACTED`
@@ -58,8 +61,12 @@ names; completion is only committed after verification and atomic rename.
 ## Security boundaries
 
 - Backend subprocesses use argument arrays, never a shell, and validate model, CSC, and
-  version strings.
-- Logs redact secret-bearing keys and never store HTML bodies or authentication tokens.
+  version strings. The configured executable must be an absolute, non-writable regular file;
+  it can also be pinned by SHA-256. Only explicitly allowlisted environment variables pass
+  to the child process.
+- Logs, console errors, and persisted failures redact secret-bearing keys and common
+  credential forms. They never store HTML bodies or authentication tokens intentionally.
 - ZIP extraction rejects absolute paths, traversal, symlinks, device-like entries,
   excessive member counts, oversized output, and suspicious compression ratios.
+- Managed lock, download, and manifest paths reject symlinks.
 - No flashing code exists. Website login and CAPTCHA automation are out of scope.

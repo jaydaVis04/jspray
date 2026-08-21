@@ -14,3 +14,18 @@ data/
 *.db-shm
 *.db-wal
 *.partial
+
+# Local agent tooling and research checkouts are not project source.
+.agents/
+.claude/
+skills-lock.json
+Bifrost/
+Samsung Firmware Discovery and Download Pipeline Prompt.md
+
+# Local configuration, secrets, and platform metadata.
+.env
+.env.*
+!.env.example
+/config.toml
+secrets.env
+.DS_Store

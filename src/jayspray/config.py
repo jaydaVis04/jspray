@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fwtool.identity import normalized_csc, normalized_model
+from jayspray.identity import normalized_csc, normalized_model
 
 
 class ConfigurationError(ValueError):
@@ -15,11 +15,11 @@ class ConfigurationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class PathsConfig:
-    database: Path = Path("/var/lib/samsung-fw-sync/database/firmware.db")
-    downloads: Path = Path("/var/lib/samsung-fw-sync/downloads")
-    extracted: Path = Path("/var/lib/samsung-fw-sync/extracted")
-    cache: Path = Path("/var/lib/samsung-fw-sync/cache")
-    state: Path = Path("/var/lib/samsung-fw-sync/state")
+    database: Path = Path("/var/lib/jayspray/database/firmware.db")
+    downloads: Path = Path("/var/lib/jayspray/downloads")
+    extracted: Path = Path("/var/lib/jayspray/extracted")
+    cache: Path = Path("/var/lib/jayspray/cache")
+    state: Path = Path("/var/lib/jayspray/state")
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +41,8 @@ class DownloadConfig:
     concurrency: int = 1
     connections_per_file: int = 1
     minimum_free_bytes: int = 15 * 1024**3
-    samloader_executable: str = "samloader"
+    samloader_executable: str = "/usr/local/bin/samloader"
+    samloader_sha256: str | None = None
     command_timeout_seconds: int = 6 * 60 * 60
 
 
@@ -83,8 +84,46 @@ def _positive(value: int | float, name: str) -> None:
         raise ConfigurationError(f"{name} must be positive")
 
 
+def _boolean(value: object, default: bool, name: str) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ConfigurationError(f"{name} must be true or false")
+    return value
+
+
+def _integer(value: object, default: int, name: str) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigurationError(f"{name} must be an integer")
+    return value
+
+
+def _number(value: object, default: float, name: str) -> float:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigurationError(f"{name} must be a number")
+    return float(value)
+
+
+def _optional_sha256(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or len(value) != 64:
+        raise ConfigurationError("download.samloader_sha256 must be a 64-character hex digest")
+    try:
+        bytes.fromhex(value)
+    except ValueError as exc:
+        raise ConfigurationError(
+            "download.samloader_sha256 must be a 64-character hex digest"
+        ) from exc
+    return value.lower()
+
+
 def load_config(path: Path | None = None) -> AppConfig:
-    configured = path or Path(os.environ.get("FWTOOL_CONFIG", "/etc/samsung-fw-sync/config.toml"))
+    configured = path or Path(os.environ.get("JAYSPRAY_CONFIG", "/etc/jayspray/config.toml"))
     data: dict[str, Any] = {}
     if configured.exists():
         with configured.open("rb") as handle:
@@ -118,7 +157,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             TargetConfig(
                 model=normalized[0],
                 csc=normalized[1],
-                enabled=bool(target.get("enabled", True)),
+                enabled=_boolean(target.get("enabled"), True, f"targets[{index}].enabled"),
             )
         )
 
@@ -132,37 +171,62 @@ def load_config(path: Path | None = None) -> AppConfig:
         ),
         targets=tuple(targets),
         discovery=DiscoveryConfig(
-            history_limit_per_target=int(
-                discovery.get(
-                    "history_limit_per_target", default.discovery.history_limit_per_target
-                )
+            history_limit_per_target=_integer(
+                discovery.get("history_limit_per_target"),
+                default.discovery.history_limit_per_target,
+                "discovery.history_limit_per_target",
             )
         ),
         download=DownloadConfig(
-            automatic=bool(download.get("automatic", default.download.automatic)),
-            automatic_extract=bool(
-                download.get("automatic_extract", default.download.automatic_extract)
+            automatic=_boolean(
+                download.get("automatic"), default.download.automatic, "download.automatic"
             ),
-            concurrency=int(download.get("concurrency", default.download.concurrency)),
-            connections_per_file=int(
-                download.get("connections_per_file", default.download.connections_per_file)
+            automatic_extract=_boolean(
+                download.get("automatic_extract"),
+                default.download.automatic_extract,
+                "download.automatic_extract",
             ),
-            minimum_free_bytes=int(
-                download.get("minimum_free_bytes", default.download.minimum_free_bytes)
+            concurrency=_integer(
+                download.get("concurrency"), default.download.concurrency, "download.concurrency"
+            ),
+            connections_per_file=_integer(
+                download.get("connections_per_file"),
+                default.download.connections_per_file,
+                "download.connections_per_file",
+            ),
+            minimum_free_bytes=_integer(
+                download.get("minimum_free_bytes"),
+                default.download.minimum_free_bytes,
+                "download.minimum_free_bytes",
             ),
             samloader_executable=str(
                 download.get("samloader_executable", default.download.samloader_executable)
             ),
-            command_timeout_seconds=int(
-                download.get("command_timeout_seconds", default.download.command_timeout_seconds)
+            samloader_sha256=_optional_sha256(download.get("samloader_sha256")),
+            command_timeout_seconds=_integer(
+                download.get("command_timeout_seconds"),
+                default.download.command_timeout_seconds,
+                "download.command_timeout_seconds",
             ),
         ),
         extract=ExtractConfig(
-            max_members=int(extract.get("max_members", default.extract.max_members)),
-            max_total_bytes=int(extract.get("max_total_bytes", default.extract.max_total_bytes)),
-            max_member_bytes=int(extract.get("max_member_bytes", default.extract.max_member_bytes)),
-            max_compression_ratio=float(
-                extract.get("max_compression_ratio", default.extract.max_compression_ratio)
+            max_members=_integer(
+                extract.get("max_members"), default.extract.max_members, "extract.max_members"
+            ),
+            max_total_bytes=_integer(
+                extract.get("max_total_bytes"),
+                default.extract.max_total_bytes,
+                "extract.max_total_bytes",
+            ),
+            max_member_bytes=_integer(
+                extract.get("max_member_bytes"),
+                default.extract.max_member_bytes,
+                "extract.max_member_bytes",
+            ),
+            max_compression_ratio=_number(
+                extract.get("max_compression_ratio"),
+                default.extract.max_compression_ratio,
+                "extract.max_compression_ratio",
             ),
         ),
         logging_level=str(data.get("logging_level", default.logging_level)).upper(),
@@ -171,9 +235,18 @@ def load_config(path: Path | None = None) -> AppConfig:
         (cfg.discovery.history_limit_per_target, "discovery.history_limit_per_target"),
         (cfg.download.concurrency, "download.concurrency"),
         (cfg.download.connections_per_file, "download.connections_per_file"),
+        (cfg.download.minimum_free_bytes, "download.minimum_free_bytes"),
+        (cfg.download.command_timeout_seconds, "download.command_timeout_seconds"),
         (cfg.extract.max_members, "extract.max_members"),
+        (cfg.extract.max_total_bytes, "extract.max_total_bytes"),
+        (cfg.extract.max_member_bytes, "extract.max_member_bytes"),
+        (cfg.extract.max_compression_ratio, "extract.max_compression_ratio"),
     ):
         _positive(value, name)
     if cfg.download.concurrency != 1:
         raise ConfigurationError("download.concurrency must be 1 in this release")
+    if not Path(cfg.download.samloader_executable).is_absolute():
+        raise ConfigurationError("download.samloader_executable must be an absolute path")
+    if cfg.logging_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise ConfigurationError("logging_level must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
     return cfg

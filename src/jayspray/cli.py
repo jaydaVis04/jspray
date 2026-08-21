@@ -8,16 +8,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fwtool.backend import SamloaderBackend
-from fwtool.config import AppConfig, load_config
-from fwtool.db import Database
-from fwtool.lock import ProcessLock
-from fwtool.logging import configure_logging
-from fwtool.orchestrator import discover, download_release, extract_release, probe
+from jayspray.backend import SamloaderBackend
+from jayspray.config import AppConfig, load_config
+from jayspray.db import Database
+from jayspray.lock import ProcessLock
+from jayspray.logging import configure_logging, redact_text
+from jayspray.orchestrator import discover, download_release, extract_release, probe
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="fwtool", description="Samsung firmware synchronization")
+    parser = argparse.ArgumentParser(
+        prog="jayspray", description="Headless Samsung firmware synchronization"
+    )
     parser.add_argument("--config", type=Path, help="path to config.toml")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -107,10 +109,37 @@ def _run_discover(database: Database, config: AppConfig, args: argparse.Namespac
     for item in result.releases:
         print(f"{item['outcome']:19} {item['model']} {item['csc']} {item['version']}")
     for target, error in result.target_errors.items():
-        print(f"TARGET FAIL {target}: {error}", file=sys.stderr)
+        print(f"TARGET FAIL {target}: {redact_text(error)}", file=sys.stderr)
     if args.command == "sync":
         if result.dry_run:
-            new_ids = {item["id"] for item in result.releases if item["outcome"] == "new_release"}
+            new_items = list(
+                {
+                    str(item["id"]): item
+                    for item in result.releases
+                    if item["outcome"] == "new_release"
+                }.values()
+            )
+            for item in result.releases:
+                if item["outcome"] == "merged_source":
+                    print(
+                        f"SKIP DUPLICATE {item['model']} {item['csc']} {item['version']} "
+                        "reason=same_model_and_pda"
+                    )
+                elif item["outcome"] == "matched_observation":
+                    print(
+                        f"SKIP EXISTING {item['model']} {item['csc']} {item['version']} "
+                        "reason=already_cataloged"
+                    )
+            for item in new_items:
+                print(f"WOULD QUEUE {item['model']} {item['csc']} {item['version']}")
+                if config.download.automatic:
+                    print(f"WOULD DOWNLOAD {item['model']} {item['csc']} {item['version']}")
+                else:
+                    print(
+                        f"SKIP DOWNLOAD {item['model']} {item['csc']} {item['version']} "
+                        "reason=automatic_download_disabled"
+                    )
+            new_ids = {str(item["id"]) for item in new_items}
             would_download = len(new_ids) if config.download.automatic else 0
             print(
                 f"would_queue={len(new_ids)} would_download={would_download} "
@@ -138,7 +167,10 @@ def _run_discover(database: Database, config: AppConfig, args: argparse.Namespac
                         operation="sync_download",
                         message=f"{type(exc).__name__}: {exc}",
                     )
-                    print(f"DOWNLOAD FAIL {str(release_id)[:8]}: {exc}", file=sys.stderr)
+                    print(
+                        f"DOWNLOAD FAIL {str(release_id)[:8]}: {redact_text(str(exc))}",
+                        file=sys.stderr,
+                    )
             if failures:
                 return 1
     enabled_targets = len([target for target in config.targets if target.enabled])
@@ -170,7 +202,10 @@ def _run_inspect(config: AppConfig, args: argparse.Namespace) -> int:
                 by_pda.setdefault(pda, []).append((csc.upper(), version))
         except Exception as exc:
             failures += 1
-            print(f"[FAIL] {args.model}/{csc.upper()}: {exc}", file=sys.stderr)
+            print(
+                f"[FAIL] {args.model}/{csc.upper()}: {redact_text(str(exc))}",
+                file=sys.stderr,
+            )
     for pda, routes in by_pda.items():
         cscs = ",".join(route[0] for route in routes)
         disposition = "MERGE" if len(routes) > 1 else "UNIQUE"
@@ -184,7 +219,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if platform.system() != "Linux":
         print(
-            "fwtool is Linux-only; run it on a Linux host or in the supplied Linux test container",
+            "jayspray is Linux-only; run it on a Linux host or in the supplied "
+            "Linux test container",
             file=sys.stderr,
         )
         return 2
@@ -201,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         with database_context as database:
             if args.command in {"discover", "sync", "backfill"}:
-                with ProcessLock(config.paths.state / "fwtool.lock"):
+                with ProcessLock(config.paths.state / "jayspray.lock"):
                     if args.command == "backfill":
                         history_limit = _validate_count(
                             args.history_limit_per_target, "--history-limit-per-target"
@@ -234,13 +270,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "probe":
                 count = _validate_count(args.first, "--first")
                 backend = SamloaderBackend(config.download)
-                with ProcessLock(config.paths.state / "fwtool.lock"):
+                with ProcessLock(config.paths.state / "jayspray.lock"):
                     results = probe(database, backend, first=count)
                 for probe_result in results:
                     tag = "OK" if probe_result.resolvable else "FAIL"
                     print(
                         f"[{tag}] {probe_result.model} {probe_result.sales_csc} "
-                        f"{probe_result.version} {probe_result.reason}"
+                        f"{probe_result.version} {redact_text(probe_result.reason)}"
                     )
                 return 1 if any(not item.resolvable for item in results) else 0
             if args.command == "download":
@@ -259,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 backend = SamloaderBackend(config.download)
                 print(f"About to download {len(rows)} firmware package(s), sequentially.")
-                with ProcessLock(config.paths.state / "fwtool.lock"):
+                with ProcessLock(config.paths.state / "jayspray.lock"):
                     for row in rows:
                         print(
                             f"DOWNLOAD {row['model']} {row['sales_csc']} "
@@ -270,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"VERIFIED {path}")
                 return 0
             if args.command == "extract":
-                with ProcessLock(config.paths.state / "fwtool.lock"):
+                with ProcessLock(config.paths.state / "jayspray.lock"):
                     manifest = extract_release(database, config, args.firmware_id)
                 print(f"EXTRACTED manifest={manifest}")
                 return 0
@@ -307,6 +343,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 0
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {redact_text(str(exc))}", file=sys.stderr)
         return 1
     return 0

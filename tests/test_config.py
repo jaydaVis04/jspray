@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from fwtool.config import ConfigurationError, load_config
+from jayspray.config import ConfigurationError, load_config
+
+
+@pytest.mark.parametrize("relative_path", ["config.example.toml", "tests/live/config.toml"])
+def test_repository_configuration_examples_parse(relative_path: str) -> None:
+    root = Path(__file__).resolve().parents[1]
+    load_config(root / relative_path)
 
 
 def test_loads_watch_targets(tmp_path: Path) -> None:
@@ -62,4 +68,35 @@ csc = "xaa"
         encoding="utf-8",
     )
     with pytest.raises(ConfigurationError, match="duplicate Samsung target"):
+        load_config(config)
+
+
+def test_rejects_relative_downloader_path(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('[download]\nsamloader_executable = "samloader"\n', encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="absolute path"):
+        load_config(config)
+
+
+def test_rejects_invalid_downloader_digest(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('[download]\nsamloader_sha256 = "not-a-digest"\n', encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="64-character hex digest"):
+        load_config(config)
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ('[download]\nautomatic = "false"\n', "must be true or false"),
+        ('[download]\nconcurrency = true\n', "must be an integer"),
+        ('logging_level = "VERBOSE"\n', "logging_level must be"),
+    ],
+)
+def test_rejects_unsafe_configuration_coercions(
+    tmp_path: Path, body: str, message: str
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(body, encoding="utf-8")
+    with pytest.raises(ConfigurationError, match=message):
         load_config(config)

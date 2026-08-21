@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from fwtool.identity import identity_for, infer_bootloader_revision, normalized_model
-from fwtool.models import FirmwareObservation
+from jayspray.identity import identity_for, infer_bootloader_revision, normalized_model
+from jayspray.models import FirmwareObservation
 
 
 def observation(csc: str, pda: str, full_version: str) -> FirmwareObservation:

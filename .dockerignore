@@ -2,8 +2,11 @@
 .venv
 .agents
 .claude
+skills-lock.json
 Bifrost
+Samsung Firmware Discovery and Download Pipeline Prompt.md
 __pycache__
+*.egg-info
 .pytest_cache
 .mypy_cache
 .ruff_cache
@@ -11,3 +14,7 @@ __pycache__
 *.partial
 dist
 build
+.DS_Store
+.env*
+/config.toml
+secrets.env

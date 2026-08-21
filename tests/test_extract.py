@@ -5,8 +5,8 @@ from zipfile import ZipFile
 
 import pytest
 
-from fwtool.config import ExtractConfig
-from fwtool.extract import ArchiveError, extract_firmware, verify_zip
+from jayspray.config import ExtractConfig
+from jayspray.extract import ArchiveError, extract_firmware, verify_zip
 
 
 def test_rejects_zip_traversal(tmp_path: Path) -> None:

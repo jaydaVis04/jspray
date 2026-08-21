@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from fwtool.models import FirmwareObservation, Identity
+from jayspray.models import FirmwareObservation, Identity
 
 MODEL_RE = re.compile(r"^(?:SM-)?[A-Z0-9]{3,16}$")
 CSC_RE = re.compile(r"^[A-Z0-9]{3,4}$")

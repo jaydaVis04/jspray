@@ -8,19 +8,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fwtool.backend.base import SamsungBackend
-from fwtool.config import AppConfig
-from fwtool.db import Database
-from fwtool.extract import (
+from jayspray.backend.base import SamsungBackend
+from jayspray.config import AppConfig
+from jayspray.db import Database
+from jayspray.extract import (
     ArchiveError,
     FileManifestEntry,
     extract_firmware,
     sha256_file,
     verify_zip,
 )
-from fwtool.identity import full_version_components, normalized_csc, normalized_model
-from fwtool.logging import log_event
-from fwtool.models import FirmwareObservation, ProbeResult, ReleaseState
+from jayspray.identity import full_version_components, normalized_csc, normalized_model
+from jayspray.logging import log_event
+from jayspray.models import FirmwareObservation, ProbeResult, ReleaseState
 
 LOGGER = logging.getLogger(__name__)
 
@@ -208,6 +208,8 @@ def download_release(
     final_dir = _release_directory(config.paths.downloads, row)
     final_path = final_dir / "firmware.zip"
     partial_path = final_dir / "firmware.zip.partial"
+    if final_path.is_symlink() or partial_path.is_symlink():
+        raise OSError("refusing a symlink at a managed firmware path")
     cataloged = database.connection.execute(
         "SELECT path FROM artifact WHERE firmware_release_id = ? "
         "AND kind = 'decrypted_zip' AND status = 'VERIFIED' ORDER BY id DESC LIMIT 1",
@@ -231,6 +233,7 @@ def download_release(
     database.queue(release_id)
     database.set_state(release_id, ReleaseState.DOWNLOADING)
     final_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    partial_path.unlink(missing_ok=True)
     try:
         backend.download(str(row["model"]), str(row["sales_csc"]), str(full_version), partial_path)
         database.set_state(release_id, ReleaseState.DOWNLOADED)
@@ -317,6 +320,8 @@ def extract_release(database: Database, config: AppConfig, release_id: str) -> P
         raise ArchiveError("no verified decrypted ZIP is catalogued for this release")
     destination = _release_directory(config.paths.extracted, row)
     manifest_path = destination / "manifest.json"
+    if manifest_path.is_symlink():
+        raise ArchiveError("existing extraction manifest must not be a symlink")
     if manifest_path.is_file():
         try:
             manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))

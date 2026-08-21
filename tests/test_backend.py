@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from fwtool.backend.samloader import BackendError, SamloaderBackend
-from fwtool.config import DownloadConfig
+from jayspray.backend.samloader import BackendError, SamloaderBackend
+from jayspray.config import DownloadConfig
 
 
 def executable(tmp_path: Path) -> Path:
@@ -58,3 +58,39 @@ def test_sensitive_backend_error_lines_are_redacted(
         backend.history("SM-S928U1", "XAA")
     assert "secret-value" not in str(caught.value)
     assert "REDACTED" in str(caught.value)
+
+
+def test_downloader_receives_only_allowlisted_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = executable(tmp_path)
+    captured: dict[str, str] = {}
+    monkeypatch.setenv("UNRELATED_PRIVATE_VALUE", "must-not-leak")
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs["env"])  # type: ignore[arg-type]
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="A556EXXS1AXA1/A556EOXM1AXA1/A556EXXS1AXA1\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    SamloaderBackend(DownloadConfig(samloader_executable=os.fspath(binary))).history(
+        "SM-A556E", "EUX"
+    )
+    assert "UNRELATED_PRIVATE_VALUE" not in captured
+    assert captured["LC_ALL"] == "C"
+
+
+def test_rejects_writable_or_digest_mismatched_downloader(tmp_path: Path) -> None:
+    binary = executable(tmp_path)
+    binary.chmod(0o777)
+    with pytest.raises(BackendError, match="not group/world writable"):
+        SamloaderBackend(DownloadConfig(samloader_executable=os.fspath(binary)))
+    binary.chmod(0o755)
+    with pytest.raises(BackendError, match="SHA-256 does not match"):
+        SamloaderBackend(
+            DownloadConfig(samloader_executable=os.fspath(binary), samloader_sha256="0" * 64)
+        )

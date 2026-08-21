@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from zipfile import ZIP_STORED, ZipFile
 
-from fwtool.backend.base import SamsungBackend
-from fwtool.config import AppConfig
-from fwtool.db import Database
-from fwtool.orchestrator import discover, download_release, extract_release
+from jayspray.backend.base import SamsungBackend
+from jayspray.config import AppConfig
+from jayspray.db import Database
+from jayspray.orchestrator import discover, download_release, extract_release
 
 PDA = "S928U1UES4AXH1"
 XAA_VERSION = f"{PDA}/S928U1OYM4AXH1/{PDA}/{PDA}"

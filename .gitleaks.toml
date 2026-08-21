@@ -1,0 +1,14 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore local tooling, generated state, and the separately cloned upstream checkout"
+paths = [
+  '''^\.agents/''',
+  '''^\.claude/''',
+  '''^\.venv/''',
+  '''^Bifrost/''',
+  '''^build/''',
+  '''^dist/''',
+  '''^src/[^/]+\.egg-info/''',
+]

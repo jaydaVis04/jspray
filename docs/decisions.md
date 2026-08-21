@@ -1,16 +1,15 @@
-# Work log
+# Decision log
 
 This is a concise durable memory for implementation decisions and verification results.
 It is updated at meaningful milestones, not for every edit.
 
-## 2026-08-21 — Phase 0 complete
+## 2026-08-21 — Bifrost investigation complete
 
-- Inspected the live SamFrew, SamFW, and SamMobile listing/detail behavior.
 - Inspected current local Bifrost source at `15936f92` through version history, binary
   metadata, Samsung endpoints, integrity checks, download, and `.enc2`/`.enc4` decryption.
 - Confirmed Bifrost has no headless CLI and does not extract the decrypted ZIP.
 - Selected maintained `samloader-rs` 2.x as the replaceable Linux Samsung/FUS CLI backend.
-- Chose Python for source adapters, orchestration, SQLite, secure extraction, and systemd
+- Chose Python for orchestration, SQLite, secure extraction, and systemd
   integration.
 - Defined strong/weak canonical identities and conflict-safe matching.
 - Confirmed Docker is available for Linux verification; Java is not a viable local build
@@ -18,7 +17,7 @@ It is updated at meaningful milestones, not for every edit.
 
 ## 2026-08-21 — Scope changed to Samsung-only
 
-- The operator cancelled all SamFrew, SamFW, and SamMobile integration.
+- All SamFrew, SamFW, and SamMobile integration was cancelled.
 - No third-party website adapter work will be committed or retained.
 - Clarified that Bifrost queries Samsung FUS/SmartHistory/FOTA for a supplied model + CSC;
   it does not enumerate all releases or scrape the cancelled firmware databases.
@@ -42,3 +41,17 @@ It is updated at meaningful milestones, not for every edit.
 - SM-S928U1 routes XAA and VZW returned the same current PDA and merged into one release.
 - Repeating discovery created zero new releases, proving metadata idempotency.
 - No firmware payload was downloaded and no device was flashed.
+
+## 2026-08-21 — Public release hardening and JAYSPRAY name
+
+- Renamed the public CLI, Python package, Linux paths, systemd units, and test image to
+  JAYSPRAY; the command is `jayspray`.
+- Added a dedicated command guide, security policy, contribution guide, documentation index,
+  read-only GitHub Actions permissions, Dependabot configuration, and pinned build inputs.
+- Made TOML types strict so values such as `automatic = "false"` cannot accidentally enable
+  downloads. Added general diagnostic redaction, a minimal downloader environment, optional
+  downloader SHA-256 pinning, symlink-resistant managed paths, and non-root container tests.
+- Removed dynamic SQL composition from catalog search and added explicit result limits.
+- The public tree and complete Git history passed Gitleaks; Semgrep reported zero findings
+  across the source/test/packaging tree; the resolved Python environment reported no known
+  vulnerabilities after its installer was updated.

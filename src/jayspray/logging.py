@@ -6,7 +6,21 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-SENSITIVE_KEY = re.compile(r"(?:authorization|cookie|password|passwd|secret|token|session)", re.I)
+SENSITIVE_KEY = re.compile(
+    r"(?:authorization|cookie|nonce|password|passwd|secret|token|session)", re.I
+)
+SENSITIVE_ASSIGNMENT = re.compile(
+    r"(?i)\b(authorization|cookie|password|passwd|secret|session|token|nonce)"
+    r"(\s*[:=]\s*)([^\s,;]+)"
+)
+BEARER_VALUE = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*")
+URL_USERINFO = re.compile(r"(https?://)[^/@\s]+@", re.I)
+
+
+def redact_text(value: str) -> str:
+    redacted = URL_USERINFO.sub(r"\1[REDACTED]@", value)
+    redacted = BEARER_VALUE.sub(r"\1[REDACTED]", redacted)
+    return SENSITIVE_ASSIGNMENT.sub(r"\1\2[REDACTED]", redacted)
 
 
 def redact(value: Any, key: str = "") -> Any:
@@ -16,6 +30,8 @@ def redact(value: Any, key: str = "") -> Any:
         return {str(k): redact(v, str(k)) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact(item) for item in value]
+    if isinstance(value, str):
+        return redact_text(value)
     return value
 
 
@@ -24,7 +40,7 @@ class StructuredFormatter(logging.Formatter):
         fields = {
             "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
-            "message": record.getMessage(),
+            "message": redact_text(record.getMessage()),
         }
         context = getattr(record, "context", None)
         if isinstance(context, Mapping):

@@ -1,18 +1,30 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
-import shutil
+import stat
 import subprocess
 from pathlib import Path
 
-from fwtool.backend.base import SamsungBackend
-from fwtool.config import DownloadConfig
-from fwtool.identity import normalized_csc, normalized_model, normalized_version
+from jayspray.backend.base import SamsungBackend
+from jayspray.config import DownloadConfig
+from jayspray.identity import normalized_csc, normalized_model, normalized_version
 
 HISTORY_VERSION_RE = re.compile(r"[A-Z0-9._+-]{4,}(?:/[A-Z0-9._+-]{4,}){2,3}")
 SENSITIVE_DIAGNOSTIC_RE = re.compile(
     r"(?:authorization|cookie|nonce|password|secret|session|token)", re.IGNORECASE
+)
+ALLOWED_SUBPROCESS_ENV = (
+    "PATH",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
 )
 
 
@@ -32,23 +44,28 @@ class SamloaderBackend(SamsungBackend):
 
     def __init__(self, config: DownloadConfig) -> None:
         self.config = config
-        executable = config.samloader_executable
-        resolved = shutil.which(executable) if "/" not in executable else executable
-        if not resolved:
-            raise BackendUnavailableError(
-                "samloader executable not found; install samloader-rs 2.x and configure its path"
-            )
-        path = Path(resolved)
+        path = Path(config.samloader_executable)
         if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
             raise BackendUnavailableError("configured samloader path is not an executable file")
-        self.executable = path.resolve()
+        resolved = path.resolve(strict=True)
+        mode = resolved.stat().st_mode
+        if not stat.S_ISREG(mode) or mode & 0o022:
+            raise BackendUnavailableError(
+                "configured samloader must be a regular file that is not group/world writable"
+            )
+        if config.samloader_sha256:
+            with resolved.open("rb") as handle:
+                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            if digest != config.samloader_sha256:
+                raise BackendUnavailableError("configured samloader SHA-256 does not match")
+        self.executable = resolved
 
     @property
     def supports_cross_process_resume(self) -> bool:
         return False
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
+        env = {name: value for name in ALLOWED_SUBPROCESS_ENV if (value := os.environ.get(name))}
         env.update({"LC_ALL": "C", "LANG": "C"})
         try:
             result = subprocess.run(  # noqa: S603
@@ -98,6 +115,8 @@ class SamloaderBackend(SamsungBackend):
             raise BackendError("an exact Samsung slash-delimited version is required")
         if not output.is_absolute():
             raise BackendError("download output path must be absolute")
+        if output.is_symlink() or (output.exists() and not output.is_file()):
+            raise BackendError("download output must be a regular file path")
         output.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
         self._run(
             [

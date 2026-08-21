@@ -7,9 +7,11 @@ Date: 2026-08-21
 The repository was installed into a clean `python:3.11-slim` Linux container. The container
 completed:
 
-- 19 unit/database/backend/extraction/orchestration tests
+- 34 unit/database/backend/extraction/orchestration/CLI/configuration tests
 - Ruff lint
 - strict MyPy checking of the package
+
+The container uses a digest-pinned base image and runs the checks as unprivileged UID 10001.
 
 Normal tests use a mock Samsung backend and tiny generated ZIPs. They do not download
 firmware. Covered behaviors include:
@@ -22,7 +24,10 @@ firmware. Covered behaviors include:
 - a completed atomic ZIP left before a database commit is reconciled, not redownloaded
 - dry run leaves the persistent catalog unchanged
 - traversal ZIPs are rejected and component manifests are generated
-- backend invocation is shell-free and sensitive diagnostic lines are redacted
+- backend invocation is shell-free, inherits only allowlisted environment values, and
+  redacts sensitive diagnostic data
+- dry run explains same-PDA duplicates, existing observations, queued work, and disabled
+  automatic downloads without persisting changes
 
 ## Live official Samsung metadata verification
 
@@ -39,7 +44,7 @@ XAA: S928U1UES6DZG1/S928U1OYM6DZG1/S928U1UES6DZG1/S928U1UES6DZG1
 VZW: S928U1UES6DZG1/S928U1OYM6DZG1/S928U1UES6DZG1/S928U1UES6DZG1
 ```
 
-`fwtool inspect` reported one `MERGE` group with two routes. A full metadata discovery then
+`jayspray inspect` reported one `MERGE` group with two routes. A full metadata discovery then
 reported one new release and one merged observation. Repeating the same discovery reported
 zero new releases and two matched observations. The catalog contained one canonical PDA
 with two Samsung route observations.

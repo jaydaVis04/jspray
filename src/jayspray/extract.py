@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import IO
 
-from fwtool.config import ExtractConfig
+from jayspray.config import ExtractConfig
 
 
 class ArchiveError(RuntimeError):

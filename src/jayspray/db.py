@@ -11,8 +11,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
-from fwtool.identity import components_compatible, identity_for, normalize_observation
-from fwtool.models import FirmwareObservation, ReleaseState, validate_transition
+from jayspray.identity import components_compatible, identity_for, normalize_observation
+from jayspray.models import FirmwareObservation, ReleaseState, validate_transition
 
 
 def _now() -> str:
@@ -66,7 +66,7 @@ class Database:
             "CREATE TABLE IF NOT EXISTS schema_migration "
             "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
-        package = resources.files("fwtool").joinpath("migration_sql")
+        package = resources.files("jayspray").joinpath("migration_sql")
         migrations = sorted(
             (item for item in package.iterdir() if item.name.endswith(".sql")),
             key=lambda item: item.name,
@@ -143,9 +143,9 @@ class Database:
     ) -> None:
         if classification not in {"RETRYABLE", "PERMANENT"}:
             raise ValueError("invalid failure classification")
-        safe_message = message[:2000]
-        from fwtool.logging import redact
+        from jayspray.logging import redact, redact_text
 
+        safe_message = redact_text(message)[:2000]
         safe_details = json.dumps(redact(details or {}), sort_keys=True)[:8000]
         now = _now()
         self.connection.execute(
@@ -472,27 +472,40 @@ class Database:
         pda: str | None = None,
         limit: int = 100,
     ) -> list[sqlite3.Row]:
-        clauses: list[str] = []
-        params: list[object] = []
-        if query:
-            clauses.append("(model LIKE ? ESCAPE '\\' OR device_name LIKE ? ESCAPE '\\')")
-            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            params.extend((f"%{escaped.upper()}%", f"%{escaped}%"))
-        if csc:
-            clauses.append("sales_csc = ?")
-            params.append(csc.upper())
-        if pda:
-            clauses.append("ap_version LIKE ? ESCAPE '\\'")
-            escaped = pda.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            params.append(f"{escaped.upper()}%")
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        params.append(limit)
+        if limit < 1 or limit > 10000:
+            raise ValueError("limit must be between 1 and 10000")
+        escaped_query = (
+            query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            if query
+            else None
+        )
+        model_pattern = f"%{escaped_query.upper()}%" if escaped_query else None
+        name_pattern = f"%{escaped_query}%" if escaped_query else None
+        escaped_pda = (
+            pda.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            if pda
+            else None
+        )
+        pda_pattern = f"{escaped_pda.upper()}%" if escaped_pda else None
+        normalized_csc = csc.upper() if csc else None
         return list(
             self.connection.execute(
-                "SELECT * FROM firmware_release"  # noqa: S608 -- clauses are fixed constants
-                + where
-                + " ORDER BY first_discovered_at DESC LIMIT ?",
-                params,
+                """SELECT * FROM firmware_release
+                   WHERE (? IS NULL OR model LIKE ? ESCAPE '\\'
+                                      OR device_name LIKE ? ESCAPE '\\')
+                     AND (? IS NULL OR sales_csc = ?)
+                     AND (? IS NULL OR ap_version LIKE ? ESCAPE '\\')
+                   ORDER BY first_discovered_at DESC LIMIT ?""",
+                (
+                    escaped_query,
+                    model_pattern,
+                    name_pattern,
+                    normalized_csc,
+                    normalized_csc,
+                    escaped_pda,
+                    pda_pattern,
+                    limit,
+                ),
             )
         )
 
@@ -544,7 +557,10 @@ class Database:
         last_version: str | None = None,
         error: str | None = None,
     ) -> None:
+        from jayspray.logging import redact_text
+
         now = _now()
+        safe_error = redact_text(error)[:2000] if error else None
         self.connection.execute(
             """INSERT INTO watch_target(
                  model, sales_csc, enabled, last_checked_at, last_success_at,
@@ -565,7 +581,7 @@ class Database:
                 now,
                 now if successful else None,
                 last_version,
-                error[:2000] if error else None,
+                safe_error,
                 now,
                 now,
                 int(successful),

@@ -1,6 +1,6 @@
-# samsung-fw-sync
+# JAYSPRAY
 
-`fwtool` is a Linux-only, headless Samsung stock-firmware catalog and retrieval service.
+`jayspray` is a Linux-only, headless Samsung stock-firmware catalog and retrieval service.
 It queries Samsung firmware history for configured model/CSC routes, deduplicates releases
 by model + PDA, downloads one official payload through Samsung FUS, validates and hashes
 the decrypted ZIP, extracts it safely, and maintains restart-safe SQLite state.
@@ -17,8 +17,23 @@ point and its download model is UI-coupled.
 
 The replaceable backend currently invokes the maintained `samloader-rs` 2.x CLI, which
 uses Samsung FUS, supports exact-version downloads, and decrypts to ZIP. No upstream source
-is copied. See [the research record](docs/phase-0-research.md),
-[current scope](docs/scope.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
+is copied. See [the Bifrost research record](docs/bifrost-research.md),
+[current scope](docs/scope.md), [security policy](SECURITY.md), and
+[third-party notices](THIRD_PARTY_NOTICES.md).
+
+JAYSPRAY does not import or automate the Bifrost GUI. Bifrost is the investigated reference
+that confirms how Samsung resolution, integrity metadata, encrypted download, and decryption
+fit together; JAYSPRAY supplies a separate headless Linux workflow around a maintained FUS
+CLI backend.
+
+| Responsibility | Bifrost | JAYSPRAY |
+| --- | --- | --- |
+| User interface | Compose desktop GUI | Linux CLI and systemd service |
+| Version lookup | Samsung SmartHistory/FOTA | Samsung history through `samloader-rs` |
+| Payload source | Samsung FUS | Samsung FUS |
+| Decryption | `.enc2`/`.enc4` to ZIP | Backend produces the decrypted ZIP |
+| ZIP extraction/catalog | Not provided | Guarded extraction, hashes, and SQLite catalog |
+| Source reuse | Upstream project | No Bifrost source is copied |
 
 ## PDA-oriented deduplication
 
@@ -40,12 +55,12 @@ byte-identical. A unique SHA-256 blob catalog adds content-level deduplication a
 Default state:
 
 ```text
-/var/lib/samsung-fw-sync/
+/var/lib/jayspray/
 ├── database/firmware.db
 ├── downloads/<model>/<pda>/<release-id>/firmware.zip
 ├── extracted/<model>/<pda>/<release-id>/manifest.json
 ├── cache/
-└── state/fwtool.lock
+└── state/jayspray.lock
 ```
 
 SQLite uses migrations, WAL, foreign keys, a busy timeout, database uniqueness constraints,
@@ -62,21 +77,22 @@ Requirements:
 - Enough storage for the ZIP plus extracted contents
 
 Install `samloader` using an upstream Linux release or `cargo install samloader`. Verify the
-binary and pin its absolute path in the configuration. Then install this project:
+binary, install it where unprivileged users cannot modify it, and pin its absolute path and
+optional SHA-256 in the configuration. Then install this project:
 
 ```bash
-python3 -m venv /opt/samsung-fw-sync/venv
-/opt/samsung-fw-sync/venv/bin/pip install /path/to/samsung-fw-sync
-sudo install -d -m 0750 /etc/samsung-fw-sync /var/lib/samsung-fw-sync
-sudo install -m 0640 config.example.toml /etc/samsung-fw-sync/config.toml
+python3 -m venv /opt/jayspray/venv
+/opt/jayspray/venv/bin/pip install /path/to/jayspray
+sudo install -d -m 0750 /etc/jayspray /var/lib/jayspray
+sudo install -m 0640 config.example.toml /etc/jayspray/config.toml
 ```
 
-Create a dedicated `samsung-fw-sync` user and make `/var/lib/samsung-fw-sync` writable by
+Create a dedicated `jayspray` user and make `/var/lib/jayspray` writable by
 that user. The package intentionally refuses to run its CLI outside Linux.
 
 ## Configuration
 
-Edit `/etc/samsung-fw-sync/config.toml`. Repeat `[[targets]]` for each model/CSC route:
+Edit `/etc/jayspray/config.toml`. Repeat `[[targets]]` for each model/CSC route:
 
 ```toml
 [[targets]]
@@ -97,80 +113,89 @@ concurrency = 1
 connections_per_file = 1
 minimum_free_bytes = 16106127360
 samloader_executable = "/usr/local/bin/samloader"
+# samloader_sha256 = "<verified 64-character digest>"
 ```
 
 Target order is meaningful: the first route that observes a new PDA becomes its download
-route. No website credentials or secrets are required. `FWTOOL_CONFIG` may point to another
+route. No website credentials or secrets are required. `JAYSPRAY_CONFIG` may point to another
 absolute config path; do not place secrets in it unless a future backend explicitly needs
 them.
 
+The downloader subprocess receives only locale, certificate, and proxy-related environment
+variables; unrelated parent-process secrets are not inherited. Treat authenticated proxy
+URLs as secrets and keep them in the service manager's protected environment, never Git.
+
 ## CLI
+
+The safest first run is `jayspray sync --dry-run`, followed by metadata-only discovery and
+probing. Payload download never happens from `discover`, `inspect`, or `probe`. See the
+[complete command guide](docs/commands.md) for effects, examples, safeguards, and exit codes.
 
 Discover bounded Samsung history without downloading:
 
 ```bash
-fwtool discover
-fwtool discover --limit 10
+jayspray discover
+jayspray discover --limit 10
 ```
 
 Preview all database and file effects:
 
 ```bash
-fwtool sync --dry-run
+jayspray sync --dry-run
 ```
 
 Compare PDA names across CSC routes without changing the database:
 
 ```bash
-fwtool inspect SM-S928U1 --csc XAA --csc EUX --history-limit 10
+jayspray inspect SM-S928U1 --csc XAA --csc EUX --history-limit 10
 ```
 
 Re-probe the first ten cataloged releases against current official Samsung history:
 
 ```bash
-fwtool probe --first 10
+jayspray probe --first 10
 ```
 
 Download exactly one unresolved release. The command prints its model, route CSC, exact
 version, and known size before starting:
 
 ```bash
-fwtool download --first 1
-fwtool download --id <firmware-id>
+jayspray download --first 1
+jayspray download --id <firmware-id>
 ```
 
 More than one large package requires explicit confirmation:
 
 ```bash
-fwtool download --first 10 --yes
+jayspray download --first 10 --yes
 ```
 
 Extract a verified ZIP and create `manifest.json` with every file's path, size, SHA-256,
 component classification, and nested `.tar.md5` flag:
 
 ```bash
-fwtool extract <firmware-id>
+jayspray extract <firmware-id>
 ```
 
 Search and inspect status:
 
 ```bash
-fwtool search SM-S928U1
-fwtool search --pda S928U1UES4
-fwtool search --csc XAA
-fwtool status
-fwtool show <firmware-id>
+jayspray search SM-S928U1
+jayspray search --pda S928U1UES4
+jayspray search --csc XAA
+jayspray status
+jayspray show <firmware-id>
 ```
 
 An explicit deeper official-history ingest is bounded per route:
 
 ```bash
-fwtool backfill --history-limit-per-target 50
+jayspray backfill --history-limit-per-target 50
 ```
 
 ## Verification and extraction safety
 
-The backend decrypts while downloading. On success `fwtool` checks the ZIP structure,
+The backend decrypts while downloading. On success `jayspray` checks the ZIP structure,
 validates every member CRC, enforces archive size/count/ratio limits, computes SHA-256, and
 then performs an atomic rename. Extraction rejects absolute paths, `..`, backslash paths,
 symlinks, devices, FIFOs, and oversized or suspicious entries. Nested `.tar.md5` archives
@@ -178,18 +203,20 @@ are cataloged but not recursively unpacked or flashed.
 
 The selected CLI backend does not expose Bifrost's encrypted Samsung CRC32/Content-MD5
 results. This is a documented backend capability gap, not silently reported as verified.
+The current upstream binary transport behavior is also documented in
+[the security policy](SECURITY.md); only deploy verified downloader builds on trusted networks.
 
 ## Daily systemd operation
 
-Install [fwtool.service](packaging/systemd/fwtool.service) and
-[fwtool.timer](packaging/systemd/fwtool.timer) under `/etc/systemd/system/`, adjust the
+Install [jayspray.service](packaging/systemd/jayspray.service) and
+[jayspray.timer](packaging/systemd/jayspray.timer) under `/etc/systemd/system/`, adjust the
 executable path if needed, then run:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now fwtool.timer
-systemctl list-timers fwtool.timer
-journalctl -u fwtool.service
+sudo systemctl enable --now jayspray.timer
+systemctl list-timers jayspray.timer
+journalctl -u jayspray.service
 ```
 
 The timer is persistent and randomized. With `automatic=false`, daily sync only updates
@@ -210,6 +237,9 @@ Ordinary tests mock Samsung and use tiny ZIPs. A real firmware package is never 
 during unit tests. Run Linux verification in Docker with `scripts/test-linux.sh`. The
 metadata-only live acceptance procedure and latest evidence are in
 [docs/acceptance.md](docs/acceptance.md).
+
+Public contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Do not include
+firmware payloads, credentials, local databases, or device/customer data in issues or commits.
 
 ## Troubleshooting
 
