@@ -1,0 +1,13 @@
+.git
+.venv
+.agents
+.claude
+Bifrost
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.db
+*.partial
+dist
+build

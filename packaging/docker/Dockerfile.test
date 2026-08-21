@@ -1,0 +1,6 @@
+FROM python:3.11-slim
+
+WORKDIR /src
+COPY . /src
+RUN python -m pip install --no-cache-dir -e '.[dev]'
+CMD ["sh", "-c", "pytest -q && ruff check src tests && mypy src"]

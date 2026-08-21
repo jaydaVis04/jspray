@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Samsung firmware synchronization
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+AccuracySec=5m
+Unit=fwtool.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,29 @@
+[Unit]
+Description=Samsung firmware synchronization
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=samsung-fw-sync
+Group=samsung-fw-sync
+ExecStart=/opt/samsung-fw-sync/venv/bin/fwtool --config /etc/samsung-fw-sync/config.toml sync
+UMask=0027
+StateDirectory=samsung-fw-sync
+StateDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/samsung-fw-sync

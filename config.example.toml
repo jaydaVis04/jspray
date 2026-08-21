@@ -1,0 +1,36 @@
+logging_level = "INFO"
+
+[paths]
+database = "/var/lib/samsung-fw-sync/database/firmware.db"
+downloads = "/var/lib/samsung-fw-sync/downloads"
+extracted = "/var/lib/samsung-fw-sync/extracted"
+cache = "/var/lib/samsung-fw-sync/cache"
+state = "/var/lib/samsung-fw-sync/state"
+
+[[targets]]
+model = "SM-S928U1"
+csc = "XAA"
+enabled = true
+
+[[targets]]
+model = "SM-A556E"
+csc = "INS"
+enabled = false
+
+[discovery]
+history_limit_per_target = 5
+
+[download]
+automatic = false
+automatic_extract = false
+concurrency = 1
+connections_per_file = 1
+minimum_free_bytes = 16106127360
+samloader_executable = "/usr/local/bin/samloader"
+command_timeout_seconds = 21600
+
+[extract]
+max_members = 5000
+max_total_bytes = 32212254720
+max_member_bytes = 12884901888
+max_compression_ratio = 1000

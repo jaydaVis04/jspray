@@ -1,0 +1,26 @@
+[paths]
+database = "/tmp/samsung-fw-sync/database/firmware.db"
+downloads = "/tmp/samsung-fw-sync/downloads"
+extracted = "/tmp/samsung-fw-sync/extracted"
+cache = "/tmp/samsung-fw-sync/cache"
+state = "/tmp/samsung-fw-sync/state"
+
+[[targets]]
+model = "SM-S928U1"
+csc = "XAA"
+
+[[targets]]
+model = "SM-S928U1"
+csc = "VZW"
+
+[discovery]
+history_limit_per_target = 1
+
+[download]
+automatic = false
+automatic_extract = false
+concurrency = 1
+connections_per_file = 1
+minimum_free_bytes = 16106127360
+samloader_executable = "/tools/samloader"
+command_timeout_seconds = 300
