@@ -238,8 +238,10 @@ during unit tests. Run Linux verification in Docker with `scripts/test-linux.sh`
 metadata-only live acceptance procedure and latest evidence are in
 [docs/acceptance.md](docs/acceptance.md).
 
-Public contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Do not include
-firmware payloads, credentials, local databases, or device/customer data in issues or commits.
+JAYSPRAY is owner-maintained and does not accept external contributions, feature requests,
+support requests, or collaborator requests. People may clone and use it under the MIT
+license. See the [maintenance policy](MAINTENANCE.md) and use only the private process in
+[SECURITY.md](SECURITY.md) for vulnerability reports.
 
 ## Troubleshooting
 

@@ -9,7 +9,7 @@ description = "Linux-only Samsung firmware discovery, download, verification, an
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{name = "JAYSPRAY contributors"}]
+authors = [{name = "JAYSPRAY"}]
 classifiers = [
   "Environment :: Console",
   "Operating System :: POSIX :: Linux",

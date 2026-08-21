@@ -13,7 +13,7 @@ def test_committed_project_files_do_not_contain_local_identity() -> None:
         root / name
         for name in (
             "README.md",
-            "CONTRIBUTING.md",
+            "MAINTENANCE.md",
             "SECURITY.md",
             "THIRD_PARTY_NOTICES.md",
             "LICENSE",

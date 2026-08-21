@@ -155,4 +155,4 @@ This never downloads payloads. Both bounds accept values from 1 through 10,000.
 - `2`: unsupported platform or command-line parsing error.
 
 Diagnostics are written without intentional secrets. Do not post unsanitized service
-environments, proxy URLs, local databases, or firmware metadata in public issues.
+environments, proxy URLs, local databases, or firmware metadata in public channels.

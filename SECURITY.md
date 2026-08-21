@@ -7,6 +7,10 @@ public issue containing credentials, authorization headers, proxy URLs, private 
 metadata, local paths, database contents, or exploit details. Include the affected version,
 impact, reproduction steps, and a minimal sanitized example.
 
+Private vulnerability reports do not create a contributor role or permission to modify the
+upstream repository. The owner implements accepted fixes. Do not send a patch unless the owner
+specifically requests one.
+
 ## Supported version
 
 Security fixes are applied to the current `main` branch until versioned releases establish
@@ -33,5 +37,6 @@ a longer support policy.
 
 Never commit firmware binaries, `.partial` downloads, SQLite databases, local configuration,
 environment files, access tokens, cookies, authorization headers, proxy credentials, crash
-dumps, or extracted device/customer data. The CI hygiene test checks for known local identity
-markers, and repository ignore rules exclude common local state.
+dumps, or extracted device/customer data. Do not publish them in pull requests or other public
+channels. The CI hygiene test checks for known local identity markers, and repository ignore
+rules exclude common local state.
