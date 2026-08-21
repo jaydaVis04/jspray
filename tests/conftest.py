@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from jayspray.config import AppConfig, DownloadConfig, PathsConfig, TargetConfig
+from jayspray.config import AppConfig, DownloadConfig, PathsConfig
 from jayspray.db import Database
 
 
@@ -18,7 +18,6 @@ def app_config(tmp_path: Path) -> AppConfig:
             cache=tmp_path / "cache",
             state=tmp_path / "state",
         ),
-        targets=(TargetConfig("SM-S928U1", "XAA"), TargetConfig("SM-S928U1", "EUX")),
         download=DownloadConfig(minimum_free_bytes=1),
     )
 

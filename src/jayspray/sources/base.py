@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from jayspray.models import FirmwareObservation
+from jayspray.models import TargetObservation
 
 
 class SourceError(RuntimeError):
@@ -16,7 +16,7 @@ class ParserError(SourceError):
 
 @dataclass(frozen=True, slots=True)
 class SourcePage:
-    observations: tuple[FirmwareObservation, ...]
+    observations: tuple[TargetObservation, ...]
     next_page: int | None = None
 
 

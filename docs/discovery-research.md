@@ -32,9 +32,11 @@ the preferred firmware payload source.
 - An isolated adapter name is reserved, but it is disabled in the example configuration and
   reports an explicit source failure if deliberately enabled.
 
-## Deduplication conclusion
+## Selection conclusion
 
-The live feeds repeat the same model/PDA for many country and carrier CSCs. The canonical
-key is therefore exactly normalized `model + PDA`. Every index row remains a separate source
-observation with its URL and CSC. Resolution tries those CSC routes until Samsung returns a
-complete version; payload SHA-256 provides a second duplicate boundary after download.
+The live feeds repeat models across many country and carrier CSCs. JAYSPRAY extracts model,
+region/CSC, date, and provenance, but does not use the advertised PDA for selection. It keeps
+model/region targets, applies the 21-day recency window, excludes any model already present
+in the external metadata catalog, and selects one region per remaining model. Samsung then
+returns the authoritative latest version for that request. Payload SHA-256 provides a final
+binary duplicate boundary.

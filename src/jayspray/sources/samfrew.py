@@ -5,7 +5,7 @@ from html.parser import HTMLParser
 from urllib.parse import unquote, urljoin
 
 from jayspray.identity import normalized_model
-from jayspray.models import FirmwareObservation
+from jayspray.models import TargetObservation
 from jayspray.sources.base import FirmwareSource, ParserError, SourcePage
 from jayspray.sources.http import HttpClient
 
@@ -48,11 +48,11 @@ class _SamFrewParser(HTMLParser):
             self.current_text.append(value)
 
 
-def parse_samfrew(html: str) -> tuple[FirmwareObservation, ...]:
+def parse_samfrew(html: str) -> tuple[TargetObservation, ...]:
     parser = _SamFrewParser()
     parser.feed(html)
-    observations: list[FirmwareObservation] = []
-    seen: set[str] = set()
+    observations: list[TargetObservation] = []
+    seen: set[tuple[str, str]] = set()
     for href, text in parser.rows:
         match = DOWNLOAD_RE.fullmatch(href)
         if match is None:
@@ -64,38 +64,24 @@ def parse_samfrew(html: str) -> tuple[FirmwareObservation, ...]:
             model = normalized_model(model)
         except ValueError:
             continue
-        record_key = match.group("record").lower()
-        if record_key in seen:
-            continue
-        seen.add(record_key)
-        pda = match.group("pda").upper()
         csc = match.group("csc").upper()
-        date = next((item for item in text if DATE_RE.fullmatch(item)), None)
-        android = None
-        for index, item in enumerate(text[:-1]):
-            if item == "Android" and text[index + 1].isdigit():
-                android = text[index + 1]
-                break
-        changelist = next(
-            (item for item in reversed(text) if item.isdigit() and len(item) >= 6), None
-        )
+        target_key = (model, csc)
+        if target_key in seen:
+            continue
+        seen.add(target_key)
         device_name = unquote(match.group("device").replace("__", " ").replace("_", " "))
+        date = next((item for item in text if DATE_RE.fullmatch(item)), None)
         observations.append(
-            FirmwareObservation(
+            TargetObservation(
                 source="samfrew",
-                source_record_key=record_key,
+                source_record_key=f"{model}:{csc}",
                 source_url=f"{BASE_URL}/firmware",
                 detail_url=urljoin(BASE_URL, href),
                 model=model,
                 sales_csc=csc,
                 device_name=device_name or None,
-                ap_version=pda,
-                csc_version=match.group("csc_version").upper(),
-                android_version=android,
-                changelist=changelist,
-                build_date=date,
-                source_upload_date=date,
-                download_status="indexed",
+                source_updated_date=date,
+                extra={"index_record": match.group("record").lower()},
             )
         )
     if not observations:

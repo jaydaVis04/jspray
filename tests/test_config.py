@@ -13,7 +13,7 @@ def test_repository_configuration_examples_parse(relative_path: str) -> None:
     load_config(root / relative_path)
 
 
-def test_loads_watch_targets(tmp_path: Path) -> None:
+def test_loads_discovery_window(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
         f"""
@@ -24,26 +24,13 @@ extracted = "{tmp_path}/extracted"
 cache = "{tmp_path}/cache"
 state = "{tmp_path}/state"
 
-[[targets]]
-model = "SM-S928U1"
-csc = "XAA"
-
-[[targets]]
-model = "SM-S928U1"
-csc = "EUX"
-enabled = false
-
 [discovery]
-history_limit_per_target = 7
+lookback_days = 21
 """,
         encoding="utf-8",
     )
     loaded = load_config(config)
-    assert [(target.model, target.csc, target.enabled) for target in loaded.targets] == [
-        ("SM-S928U1", "XAA", True),
-        ("SM-S928U1", "EUX", False),
-    ]
-    assert loaded.discovery.history_limit_per_target == 7
+    assert loaded.discovery.lookback_days == 21
     assert loaded.discovery.sources == ("samfrew", "sammobile")
 
 
@@ -51,24 +38,6 @@ def test_rejects_relative_storage_path(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     config.write_text('[paths]\ndatabase = "relative.db"\n', encoding="utf-8")
     with pytest.raises(ConfigurationError):
-        load_config(config)
-
-
-def test_rejects_duplicate_model_csc_target(tmp_path: Path) -> None:
-    config = tmp_path / "config.toml"
-    config.write_text(
-        """
-[[targets]]
-model = "SM-S928U1"
-csc = "XAA"
-
-[[targets]]
-model = "sm-s928u1"
-csc = "xaa"
-""",
-        encoding="utf-8",
-    )
-    with pytest.raises(ConfigurationError, match="duplicate Samsung target"):
         load_config(config)
 
 
@@ -83,6 +52,13 @@ def test_rejects_invalid_downloader_digest(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     config.write_text('[download]\nsamloader_sha256 = "not-a-digest"\n', encoding="utf-8")
     with pytest.raises(ConfigurationError, match="64-character hex digest"):
+        load_config(config)
+
+
+def test_metadata_append_requires_a_path(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("[metadata]\nappend_completed = true\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match=r"requires metadata\.path"):
         load_config(config)
 
 

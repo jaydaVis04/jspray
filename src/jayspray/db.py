@@ -11,8 +11,19 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
-from jayspray.identity import components_compatible, identity_for, normalize_observation
-from jayspray.models import FirmwareObservation, ReleaseState, validate_transition
+from jayspray.identity import (
+    components_compatible,
+    identity_for,
+    normalize_observation,
+    normalized_csc,
+    normalized_model,
+)
+from jayspray.models import (
+    FirmwareObservation,
+    ReleaseState,
+    TargetObservation,
+    validate_transition,
+)
 
 
 def _now() -> str:
@@ -22,6 +33,13 @@ def _now() -> str:
 @dataclass(frozen=True, slots=True)
 class MergeResult:
     release_id: str
+    outcome: str
+    source_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class TargetMergeResult:
+    target_id: str
     outcome: str
     source_count: int
 
@@ -174,6 +192,110 @@ class Database:
             )
         )
 
+    def upsert_target_observation(self, observation: TargetObservation) -> TargetMergeResult:
+        source = observation.source.strip().lower()
+        record_key = observation.source_record_key.strip()
+        model = normalized_model(observation.model)
+        csc = normalized_csc(observation.sales_csc)
+        observed = observation.observed_at.isoformat()
+        payload = json.dumps(
+            observation.as_json_dict(), sort_keys=True, separators=(",", ":")
+        )
+        with self.transaction():
+            target = self.connection.execute(
+                "SELECT * FROM firmware_target WHERE model = ? AND sales_csc = ?",
+                (model, csc),
+            ).fetchone()
+            if target is None:
+                target_id = str(uuid.uuid4())
+                self.connection.execute(
+                    """INSERT INTO firmware_target(
+                         id, model, sales_csc, device_name, country, region, carrier,
+                         first_discovered_at, last_observed_at, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        target_id,
+                        model,
+                        csc,
+                        observation.device_name,
+                        observation.country,
+                        observation.region,
+                        observation.carrier,
+                        observed,
+                        observed,
+                        observed,
+                        observed,
+                    ),
+                )
+                outcome = "new_target"
+            else:
+                target_id = str(target["id"])
+                self.connection.execute(
+                    """UPDATE firmware_target SET
+                         device_name = COALESCE(device_name, ?),
+                         country = COALESCE(country, ?), region = COALESCE(region, ?),
+                         carrier = COALESCE(carrier, ?), last_observed_at = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        observation.device_name,
+                        observation.country,
+                        observation.region,
+                        observation.carrier,
+                        observed,
+                        observed,
+                        target_id,
+                    ),
+                )
+                outcome = "matched_target"
+
+            previous = self.connection.execute(
+                "SELECT id FROM target_observation WHERE source = ? AND source_record_key = ?",
+                (source, record_key),
+            ).fetchone()
+            if previous:
+                self.connection.execute(
+                    """UPDATE target_observation SET
+                         source_url = ?, detail_url = ?, payload_json = ?, last_seen_at = ?,
+                         observation_count = observation_count + 1
+                       WHERE id = ?""",
+                    (
+                        observation.source_url,
+                        observation.detail_url,
+                        payload,
+                        observed,
+                        previous["id"],
+                    ),
+                )
+                if outcome != "new_target":
+                    outcome = "matched_observation"
+            else:
+                self.connection.execute(
+                    """INSERT INTO target_observation(
+                         firmware_target_id, source, source_record_key, source_url, detail_url,
+                         payload_json, first_seen_at, last_seen_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        target_id,
+                        source,
+                        record_key,
+                        observation.source_url,
+                        observation.detail_url,
+                        payload,
+                        observed,
+                        observed,
+                    ),
+                )
+                if outcome != "new_target":
+                    outcome = "merged_source"
+            source_count = int(
+                self.connection.execute(
+                    "SELECT count(DISTINCT source) FROM target_observation "
+                    "WHERE firmware_target_id = ?",
+                    (target_id,),
+                ).fetchone()[0]
+            )
+        return TargetMergeResult(target_id, outcome, source_count)
+
     def upsert_observation(self, observation: FirmwareObservation) -> MergeResult:
         item = normalize_observation(observation)
         ident = identity_for(item)
@@ -209,9 +331,13 @@ class Database:
                 )
                 outcome = "matched_observation"
             else:
-                release = None
+                release = self.connection.execute(
+                    """SELECT * FROM firmware_release
+                       WHERE model = ? AND sales_csc = ? AND ap_version = ?""",
+                    (item.model, item.sales_csc, item.ap_version),
+                ).fetchone()
                 if ident.strong_key:
-                    release = self.connection.execute(
+                    release = release or self.connection.execute(
                         "SELECT * FROM firmware_release WHERE strong_key = ?", (ident.strong_key,)
                     ).fetchone()
                 if release is None:
@@ -446,6 +572,99 @@ class Database:
             )
         )
 
+    def get_target(self, target_id: str) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            self.connection.execute(
+                "SELECT * FROM firmware_target WHERE id = ?", (target_id,)
+            ).fetchone(),
+        )
+
+    def list_targets(self, *, limit: int = 100) -> list[sqlite3.Row]:
+        if limit < 1 or limit > 10000:
+            raise ValueError("limit must be between 1 and 10000")
+        return list(
+            self.connection.execute(
+                "SELECT * FROM firmware_target ORDER BY first_discovered_at DESC LIMIT ?",
+                (limit,),
+            )
+        )
+
+    def target_sources(self, target_id: str) -> list[str]:
+        return [
+            str(row[0])
+            for row in self.connection.execute(
+                "SELECT DISTINCT source FROM target_observation "
+                "WHERE firmware_target_id = ? ORDER BY source",
+                (target_id,),
+            )
+        ]
+
+    def search_targets(
+        self,
+        query: str | None = None,
+        *,
+        csc: str | None = None,
+        limit: int = 100,
+    ) -> list[sqlite3.Row]:
+        if limit < 1 or limit > 10000:
+            raise ValueError("limit must be between 1 and 10000")
+        escaped = (
+            query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            if query
+            else None
+        )
+        model_pattern = f"%{escaped.upper()}%" if escaped else None
+        name_pattern = f"%{escaped}%" if escaped else None
+        normalized_route = normalized_csc(csc) if csc else None
+        return list(
+            self.connection.execute(
+                """SELECT * FROM firmware_target
+                   WHERE (? IS NULL OR model LIKE ? ESCAPE '\\'
+                                      OR device_name LIKE ? ESCAPE '\\')
+                     AND (? IS NULL OR sales_csc = ?)
+                   ORDER BY first_discovered_at DESC LIMIT ?""",
+                (
+                    escaped,
+                    model_pattern,
+                    name_pattern,
+                    normalized_route,
+                    normalized_route,
+                    limit,
+                ),
+            )
+        )
+
+    def set_target_resolution(
+        self,
+        target_id: str,
+        *,
+        release_id: str | None,
+        full_version: str | None,
+        error: str | None = None,
+    ) -> None:
+        from jayspray.logging import redact_text
+
+        if self.get_target(target_id) is None:
+            raise KeyError(target_id)
+        now = _now()
+        self.connection.execute(
+            """UPDATE firmware_target SET
+                 latest_release_id = COALESCE(?, latest_release_id),
+                 latest_full_version = COALESCE(?, latest_full_version),
+                 last_resolved_at = ?, last_error = ?, updated_at = ?
+               WHERE id = ?""",
+            (
+                release_id,
+                full_version,
+                now,
+                redact_text(error)[:2000] if error else None,
+                now,
+                target_id,
+            ),
+        )
+        self.connection.commit()
+
     def sources_for_release(self, release_id: str) -> list[str]:
         return [
             str(row[0])
@@ -553,47 +772,22 @@ class Database:
         )
         self.connection.commit()
 
-    def update_watch_target(
-        self,
-        model: str,
-        sales_csc: str,
-        *,
-        enabled: bool,
-        successful: bool,
-        last_version: str | None = None,
-        error: str | None = None,
-    ) -> None:
-        from jayspray.logging import redact_text
-
-        now = _now()
-        safe_error = redact_text(error)[:2000] if error else None
-        self.connection.execute(
-            """INSERT INTO watch_target(
-                 model, sales_csc, enabled, last_checked_at, last_success_at,
-                 last_version, last_error, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(model, sales_csc) DO UPDATE SET
-                 enabled = excluded.enabled,
-                 last_checked_at = excluded.last_checked_at,
-                 last_success_at = CASE WHEN ? THEN excluded.last_success_at
-                                        ELSE watch_target.last_success_at END,
-                 last_version = COALESCE(excluded.last_version, watch_target.last_version),
-                 last_error = excluded.last_error,
-                 updated_at = excluded.updated_at""",
-            (
-                model,
-                sales_csc,
-                int(enabled),
-                now,
-                now if successful else None,
-                last_version,
-                safe_error,
-                now,
-                now,
-                int(successful),
-            ),
+    def model_has_verified_artifact(
+        self, model: str, *, exclude_release_id: str | None = None
+    ) -> bool:
+        normalized = normalized_model(model)
+        return (
+            self.connection.execute(
+                """SELECT 1 FROM artifact AS artifact
+                   JOIN firmware_release AS release
+                     ON release.id = artifact.firmware_release_id
+                   WHERE release.model = ? AND artifact.status = 'VERIFIED'
+                     AND (? IS NULL OR release.id <> ?)
+                   LIMIT 1""",
+                (normalized, exclude_release_id, exclude_release_id),
+            ).fetchone()
+            is not None
         )
-        self.connection.commit()
 
     def update_source_checkpoint(
         self,
@@ -640,14 +834,6 @@ class Database:
                 "SELECT state, count(*) AS count FROM firmware_release GROUP BY state"
             )
         }
-        targets = [
-            dict(row)
-            for row in self.connection.execute(
-                """SELECT model, sales_csc, enabled, last_checked_at, last_success_at,
-                          last_version, last_error
-                   FROM watch_target ORDER BY model, sales_csc"""
-            )
-        ]
         sources = [
             dict(row)
             for row in self.connection.execute(
@@ -656,6 +842,21 @@ class Database:
                    FROM source_checkpoint ORDER BY source"""
             )
         ]
+        firmware_targets = {
+            "total": int(
+                self.connection.execute("SELECT count(*) FROM firmware_target").fetchone()[0]
+            ),
+            "resolved": int(
+                self.connection.execute(
+                    "SELECT count(*) FROM firmware_target WHERE latest_release_id IS NOT NULL"
+                ).fetchone()[0]
+            ),
+            "failed": int(
+                self.connection.execute(
+                    "SELECT count(*) FROM firmware_target WHERE last_error IS NOT NULL"
+                ).fetchone()[0]
+            ),
+        }
         last_run = self.connection.execute(
             "SELECT * FROM run ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
@@ -666,8 +867,8 @@ class Database:
         )
         return {
             "states": counts,
+            "firmware_targets": firmware_targets,
             "sources": sources,
-            "targets": targets,
             "last_run": dict(last_run) if last_run else None,
             "unresolved_failures": failures,
         }

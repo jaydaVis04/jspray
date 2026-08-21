@@ -12,22 +12,21 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def test_samfrew_latest_parser() -> None:
     rows = parse_samfrew((FIXTURES / "samfrew/latest.html").read_text(encoding="utf-8"))
-    assert [(item.model, item.sales_csc, item.ap_version) for item in rows] == [
-        ("SM-S928U1", "XAA", "S928U1UES6DZG1"),
-        ("SM-S928U1", "CCT", "S928U1UES6DZG1"),
+    assert [(item.model, item.sales_csc) for item in rows] == [
+        ("SM-S928U1", "XAA"),
+        ("SM-S928U1", "CCT"),
     ]
-    assert rows[0].android_version == "16"
-    assert rows[0].changelist == "33003255"
+    assert rows[0].source_updated_date == "7/6/2026"
 
 
 def test_sammobile_latest_parser() -> None:
     rows = parse_sammobile((FIXTURES / "sammobile/latest.html").read_text(encoding="utf-8"))
-    assert [(item.model, item.sales_csc, item.ap_version) for item in rows] == [
-        ("SM-F971U", "XAA", "F971USQS2AZH7"),
-        ("SM-F971Q", "SJP", "F971QOPU1AZGI"),
+    assert [(item.model, item.sales_csc) for item in rows] == [
+        ("SM-F971U", "XAA"),
+        ("SM-F971Q", "SJP"),
     ]
     assert rows[0].country == "USA"
-    assert rows[0].android_version == "17"
+    assert rows[0].source_updated_date == "2026-08-21"
 
 
 @pytest.mark.parametrize("parser", [parse_samfrew, parse_sammobile])
