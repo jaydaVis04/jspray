@@ -11,15 +11,12 @@ from typing import Any
 from jayspray.backend import SamloaderBackend
 from jayspray.config import AppConfig, load_config
 from jayspray.db import Database
+from jayspray.identity import normalized_csc, normalized_model
 from jayspray.lock import ProcessLock
 from jayspray.logging import configure_logging, redact_text
-from jayspray.orchestrator import (
-    discover,
-    discover_targets,
-    download_release,
-    extract_release,
-    probe,
-)
+from jayspray.metadata_index import ExternalMetadataIndex
+from jayspray.models import TargetObservation, utc_now
+from jayspray.orchestrator import discover, download_release, extract_release, probe
 from jayspray.sources import configured_sources
 
 
@@ -30,60 +27,40 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="path to config.toml")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    discover_p = sub.add_parser("discover", help="discover metadata without downloading")
+    discover_p = sub.add_parser("discover", help="discover recent model/region targets")
     discover_p.add_argument("--limit", type=int)
     discover_p.add_argument("--dry-run", action="store_true")
 
-    sync_p = sub.add_parser("sync", help="discover and apply configured queue policy")
+    sync_p = sub.add_parser("sync", help="discover targets and resolve Samsung's latest")
     sync_p.add_argument("--limit", type=int)
     sync_p.add_argument("--dry-run", action="store_true")
 
-    probe_p = sub.add_parser("probe", help="probe Samsung history without a payload download")
+    probe_p = sub.add_parser("probe", help="resolve latest firmware without downloading")
     probe_p.add_argument("--first", type=int, required=True)
 
-    inspect_p = sub.add_parser(
-        "inspect", help="compare official Samsung PDA history across CSC routes"
-    )
-    inspect_p.add_argument("model", help="Samsung model, for example SM-S928U1")
-    inspect_p.add_argument("--csc", action="append", required=True, help="repeat for each CSC")
-    inspect_p.add_argument("--history-limit", type=int, default=5)
-
-    download_p = sub.add_parser("download", help="download exact probed firmware releases")
+    download_p = sub.add_parser("download", help="resolve and download official firmware")
     group = download_p.add_mutually_exclusive_group(required=True)
-    group.add_argument("--first", type=int)
-    group.add_argument("--id", dest="release_id")
+    group.add_argument("--first", type=int, help="first N discovered model/region targets")
+    group.add_argument("--id", dest="release_id", help="already resolved firmware release ID")
+    group.add_argument("--model", help="Samsung model to resolve directly")
+    download_p.add_argument("--region", "--csc", dest="region", help="Samsung region/CSC")
     download_p.add_argument(
         "--yes", action="store_true", help="confirm more than one large download"
     )
 
     extract_p = sub.add_parser("extract", help="extract and catalog a verified firmware ZIP")
-    extract_p.add_argument("firmware_id")
+    extract_p.add_argument("firmware_id", help="resolved firmware release ID")
 
-    sub.add_parser("status", help="show run, queue, failure, and disk status")
+    sub.add_parser("status", help="show source, target, run, failure, and disk status")
 
-    search_p = sub.add_parser("search", help="search the local firmware catalog")
+    search_p = sub.add_parser("search", help="search discovered model/region targets")
     search_p.add_argument("query", nargs="?")
-    search_p.add_argument("--csc")
-    search_p.add_argument("--pda")
+    search_p.add_argument("--region", "--csc", dest="region")
     search_p.add_argument("--limit", type=int, default=100)
 
-    show_p = sub.add_parser("show", help="show a canonical release and all Samsung CSC routes")
-    show_p.add_argument("firmware_id")
-
-    backfill_p = sub.add_parser("backfill", help="explicit bounded Samsung history discovery")
-    backfill_p.add_argument("--history-limit-per-target", type=int, required=True)
-    backfill_p.add_argument("--limit", type=int)
+    show_p = sub.add_parser("show", help="show a target and its latest resolved release")
+    show_p.add_argument("target_id")
     return parser
-
-
-def _print_release(row: Any, database: Database) -> None:
-    routes = database.route_observations(str(row["id"]))
-    sources = database.sources_for_release(str(row["id"]))
-    print(
-        f"{str(row['id'])[:8]} {row['model']} {row['sales_csc']} {row['ap_version']} "
-        f"state={row['state']} full_version={row['full_version'] or '-'} "
-        f"sources={'+'.join(sources)} routes={len(routes)}"
-    )
 
 
 def _open_database(config: AppConfig) -> Database:
@@ -98,6 +75,145 @@ def _validate_count(value: int | None, name: str) -> int:
     return value
 
 
+def _print_target(row: Any, database: Database) -> None:
+    sources = database.target_sources(str(row["id"]))
+    print(
+        f"{str(row['id'])[:8]} {row['model']} {row['sales_csc']} "
+        f"latest={row['latest_full_version'] or '-'} observed_by={'+'.join(sources)}"
+    )
+
+
+def _manual_target(database: Database, model: str, region: str) -> str:
+    now = utc_now()
+    normalized = normalized_model(model)
+    normalized_region = normalized_csc(region)
+    result = database.upsert_target_observation(
+        TargetObservation(
+            source="manual",
+            source_record_key=f"{normalized}:{normalized_region}",
+            source_url="manual:model-region",
+            detail_url=None,
+            model=normalized,
+            sales_csc=normalized_region,
+            source_updated_date=now.date().isoformat(),
+            observed_at=now,
+        )
+    )
+    return result.target_id
+
+
+def _metadata_index(
+    database: Database, config: AppConfig
+) -> ExternalMetadataIndex | None:
+    if config.metadata.path is None:
+        return None
+    index = ExternalMetadataIndex(database, config.metadata.path)
+    index.refresh()
+    return index
+
+
+def _unique_target_ids_by_model(
+    database: Database,
+    target_ids: list[str],
+    metadata_index: ExternalMetadataIndex | None,
+) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for target_id in target_ids:
+        row = database.get_target(target_id)
+        if row is None:
+            continue
+        model = normalized_model(str(row["model"]))
+        if model in seen:
+            print(f"SKIP TARGET {model} {row['sales_csc']} reason=model_already_selected")
+            continue
+        seen.add(model)
+        if metadata_index is not None and metadata_index.contains(model):
+            print(f"SKIP TARGET {model} {row['sales_csc']} reason=model_in_metadata")
+            continue
+        if database.model_has_verified_artifact(model):
+            print(f"SKIP TARGET {model} {row['sales_csc']} reason=model_already_downloaded")
+            continue
+        selected.append(target_id)
+    return selected
+
+
+def _filter_download_rows(
+    database: Database,
+    rows: list[Any],
+    metadata_index: ExternalMetadataIndex | None,
+) -> list[Any]:
+    selected: list[Any] = []
+    seen: set[str] = set()
+    for row in rows:
+        model = normalized_model(str(row["model"]))
+        if model in seen:
+            print(f"SKIP DOWNLOAD {model} reason=model_already_selected")
+            continue
+        seen.add(model)
+        if metadata_index is not None and metadata_index.contains(model):
+            print(f"SKIP DOWNLOAD {model} reason=model_in_metadata")
+            continue
+        if database.model_has_verified_artifact(
+            model, exclude_release_id=str(row["id"])
+        ):
+            print(f"SKIP DOWNLOAD {model} reason=model_already_downloaded")
+            continue
+        selected.append(row)
+    return selected
+
+
+def _append_completed_metadata(
+    database: Database,
+    config: AppConfig,
+    metadata_index: ExternalMetadataIndex | None,
+    row: Any,
+    path: Path,
+) -> None:
+    if metadata_index is None or not config.metadata.append_completed:
+        return
+    artifact = database.connection.execute(
+        "SELECT sha256 FROM artifact WHERE firmware_release_id = ? "
+        "AND path = ? AND status = 'VERIFIED' ORDER BY id DESC LIMIT 1",
+        (str(row["id"]), str(path)),
+    ).fetchone()
+    if artifact is None or not artifact["sha256"]:
+        raise RuntimeError("verified firmware artifact has no SHA-256 for metadata append")
+    metadata_index.append_completed(
+        {
+            "model": row["model"],
+            "region": row["sales_csc"],
+            "full_version": row["full_version"],
+            "firmware_release_id": row["id"],
+            "artifact": path,
+            "sha256": artifact["sha256"],
+            "completed_at": utc_now().isoformat(),
+        }
+    )
+
+
+def _resolve_target_ids(
+    database: Database,
+    config: AppConfig,
+    target_ids: list[str],
+) -> tuple[SamloaderBackend, list[Any]]:
+    backend = SamloaderBackend(config.download)
+    results = probe(
+        database,
+        backend,
+        first=max(1, len(target_ids)),
+        target_ids=target_ids,
+    )
+    for item in results:
+        tag = "RESOLVED" if item.resolvable else "RESOLVE FAIL"
+        version = item.version or "-"
+        print(
+            f"{tag} {item.model} {item.sales_csc} {version} "
+            f"{redact_text(item.reason)}"
+        )
+    return backend, results
+
+
 def _run_discover(database: Database, config: AppConfig, args: argparse.Namespace) -> int:
     limit = None if args.limit is None else _validate_count(args.limit, "--limit")
     result = discover(
@@ -110,153 +226,111 @@ def _run_discover(database: Database, config: AppConfig, args: argparse.Namespac
     )
     label = "DRY RUN" if result.dry_run else "DISCOVERY"
     print(
-        f"{label}: candidates={result.candidates} new={result.new_releases} "
-        f"matched={result.matched_observations} sources={','.join(config.discovery.sources)}"
+        f"{label}: targets={result.candidates} new={result.new_targets} "
+        f"matched={result.matched_observations} old_skipped={result.filtered_old} "
+        f"undated_skipped={result.filtered_undated} "
+        f"metadata_skipped={result.filtered_existing} "
+        f"sources={','.join(config.discovery.sources)}"
     )
-    for item in result.releases:
+    for item in result.targets:
         print(
-            f"{item['outcome']:19} {item['model']} {item['csc']} {item['version']} "
-            f"source={item['source']} observed_by={'+'.join(item['sources'])} "
-            f"observations={item['source_count']}"
+            f"{item['outcome']:19} {item['model']} {item['csc']} "
+            f"date={item['source_date']} source={item['source']} "
+            f"observed_by={'+'.join(item['sources'])}"
         )
     for source, error in result.source_errors.items():
         print(f"SOURCE FAIL {source}: {redact_text(error)}", file=sys.stderr)
+
     if args.command == "sync":
+        discovered_targets = list(
+            dict.fromkeys(str(item["id"]) for item in result.targets)
+        )
         if result.dry_run:
-            new_items = list(
-                {
-                    str(item["id"]): item
-                    for item in result.releases
-                    if item["outcome"] == "new_release"
-                }.values()
-            )
-            for item in result.releases:
-                if item["outcome"] == "merged_source":
+            unique_items: list[dict[str, Any]] = []
+            seen_models: set[str] = set()
+            for item in result.targets:
+                model = normalized_model(str(item["model"]))
+                if model in seen_models:
                     print(
-                        f"SKIP DUPLICATE {item['model']} {item['csc']} {item['version']} "
-                        "reason=same_model_and_pda"
+                        f"SKIP TARGET {model} {item['csc']} "
+                        "reason=model_already_selected"
                     )
-                elif item["outcome"] == "matched_observation":
-                    print(
-                        f"SKIP EXISTING {item['model']} {item['csc']} {item['version']} "
-                        "reason=already_cataloged"
-                    )
-            for item in new_items:
-                print(f"WOULD RESOLVE {item['model']} {item['csc']} PDA={item['version']}")
-                print(f"WOULD QUEUE {item['model']} {item['csc']} PDA={item['version']}")
+                    continue
+                seen_models.add(model)
+                unique_items.append(item)
+            for item in unique_items:
+                print(f"WOULD RESOLVE LATEST {item['model']} {item['csc']}")
                 if config.download.automatic:
-                    print(f"WOULD DOWNLOAD {item['model']} {item['csc']} {item['version']}")
+                    print(f"WOULD DOWNLOAD IF CHANGED {item['model']} {item['csc']}")
                 else:
                     print(
-                        f"SKIP DOWNLOAD {item['model']} {item['csc']} {item['version']} "
+                        f"SKIP DOWNLOAD {item['model']} {item['csc']} "
                         "reason=automatic_download_disabled"
                     )
-            new_ids = {str(item["id"]) for item in new_items}
-            would_download = len(new_ids) if config.download.automatic else 0
             print(
-                f"would_queue={len(new_ids)} would_download={would_download} "
+                f"would_resolve={len(unique_items)} "
                 f"automatic={str(config.download.automatic).lower()}"
             )
-        elif config.download.automatic:
-            failures = 0
-            backend = SamloaderBackend(config.download)
-            new_release_ids = list(
-                dict.fromkeys(
-                    item["id"] for item in result.releases if item["outcome"] == "new_release"
-                )
+        elif discovered_targets:
+            metadata_index = _metadata_index(database, config)
+            unique_targets = _unique_target_ids_by_model(
+                database, discovered_targets, metadata_index
             )
-            resolution = probe(
-                database,
-                backend,
-                first=max(1, len(new_release_ids)),
-                release_ids=[str(item) for item in new_release_ids],
-            )
-            resolvable_ids = {item.release_id for item in resolution if item.resolvable}
-            for probe_item in resolution:
-                tag = "RESOLVED" if probe_item.resolvable else "RESOLVE FAIL"
-                print(
-                    f"{tag} {probe_item.model} {probe_item.sales_csc} "
-                    f"{probe_item.version} {probe_item.reason}"
-                )
-            for release_id in new_release_ids:
-                if str(release_id) not in resolvable_ids:
-                    failures += 1
-                    continue
-                try:
-                    path = download_release(database, config, backend, str(release_id))
-                    print(f"VERIFIED {path}")
-                    if config.download.automatic_extract:
-                        manifest = extract_release(database, config, str(release_id))
-                        print(f"EXTRACTED manifest={manifest}")
-                except Exception as exc:
-                    failures += 1
-                    database.record_failure(
-                        release_id=str(release_id),
-                        source="samsung_fus",
-                        operation="sync_download",
-                        message=f"{type(exc).__name__}: {exc}",
-                    )
-                    print(
-                        f"DOWNLOAD FAIL {str(release_id)[:8]}: {redact_text(str(exc))}",
-                        file=sys.stderr,
-                    )
-            if failures:
+            backend, resolution = _resolve_target_ids(database, config, unique_targets)
+            resolvable = [item for item in resolution if item.resolvable]
+            if config.download.automatic:
+                for item in resolvable:
+                    try:
+                        path = download_release(database, config, backend, item.release_id)
+                        print(f"VERIFIED {path}")
+                        row = database.get_release(item.release_id)
+                        if row is None:
+                            raise KeyError(item.release_id)
+                        _append_completed_metadata(
+                            database, config, metadata_index, row, path
+                        )
+                        if config.download.automatic_extract:
+                            manifest = extract_release(database, config, item.release_id)
+                            print(f"EXTRACTED manifest={manifest}")
+                    except Exception as exc:
+                        database.record_failure(
+                            release_id=item.release_id,
+                            source="samsung_fus",
+                            operation="sync_download",
+                            message=f"{type(exc).__name__}: {exc}",
+                        )
+                        print(
+                            f"DOWNLOAD FAIL {item.model}/{item.sales_csc}: "
+                            f"{redact_text(str(exc))}",
+                            file=sys.stderr,
+                        )
+                        return 1
+            if resolution and not resolvable:
                 return 1
     return 1 if len(result.source_errors) == len(config.discovery.sources) else 0
 
 
 def _status(database: Database, config: AppConfig) -> None:
-    status = database.status_summary()
-    print(json.dumps(status, indent=2, sort_keys=True))
-    for label, path in (
-        ("downloads", config.paths.downloads),
-        ("extracted", config.paths.extracted),
-    ):
+    print(json.dumps(database.status_summary(), indent=2, sort_keys=True))
+    paths = (("downloads", config.paths.downloads), ("extracted", config.paths.extracted))
+    for label, path in paths:
         base = path if path.exists() else path.parent
         if base.exists():
             usage = shutil.disk_usage(base)
             print(f"disk {label}: free={usage.free} total={usage.total} path={path}")
 
 
-def _run_inspect(config: AppConfig, args: argparse.Namespace) -> int:
-    history_limit = _validate_count(args.history_limit, "--history-limit")
-    backend = SamloaderBackend(config.download)
-    by_pda: dict[str, list[tuple[str, str]]] = {}
-    failures = 0
-    for csc in args.csc:
-        try:
-            for version in backend.history(args.model, csc)[:history_limit]:
-                pda = version.split("/", 1)[0]
-                by_pda.setdefault(pda, []).append((csc.upper(), version))
-        except Exception as exc:
-            failures += 1
-            print(
-                f"[FAIL] {args.model}/{csc.upper()}: {redact_text(str(exc))}",
-                file=sys.stderr,
-            )
-    for pda, routes in by_pda.items():
-        cscs = ",".join(route[0] for route in routes)
-        disposition = "MERGE" if len(routes) > 1 else "UNIQUE"
-        print(f"[{disposition}] {args.model.upper()} PDA={pda} routes={len(routes)} CSC={cscs}")
-        for csc, version in routes:
-            print(f"  {csc}: {version}")
-    return 1 if failures == len(args.csc) else 0
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if platform.system() != "Linux":
         print(
-            "jayspray is Linux-only; run it on a Linux host or in the supplied "
-            "Linux test container",
+            "jayspray is Linux-only; run it on Linux or in the supplied test container",
             file=sys.stderr,
         )
         return 2
     try:
         config = load_config(args.config)
         configure_logging(config.logging_level)
-        if args.command == "inspect":
-            return _run_inspect(config, args)
         dry_discovery = args.command in {"discover", "sync"} and bool(args.dry_run)
         database_context = (
             Database.readonly_snapshot(config.paths.database)
@@ -264,90 +338,97 @@ def main(argv: list[str] | None = None) -> int:
             else _open_database(config)
         )
         with database_context as database:
-            if args.command in {"discover", "sync", "backfill"}:
+            if args.command in {"discover", "sync"}:
                 with ProcessLock(config.paths.state / "jayspray.lock"):
-                    if args.command == "backfill":
-                        history_limit = _validate_count(
-                            args.history_limit_per_target, "--history-limit-per-target"
-                        )
-                        limit = (
-                            None if args.limit is None else _validate_count(args.limit, "--limit")
-                        )
-                        backend = SamloaderBackend(config.download)
-                        result = discover_targets(
-                            database,
-                            config,
-                            backend,
-                            history_limit_per_target=history_limit,
-                            limit=limit,
-                            command="backfill",
-                        )
-                        print(
-                            f"BACKFILL: candidates={result.candidates} new={result.new_releases} "
-                            f"matched={result.matched_observations} upstream=Samsung"
-                        )
-                        enabled_targets = len(
-                            [target for target in config.targets if target.enabled]
-                        )
-                        return (
-                            1
-                            if enabled_targets and len(result.target_errors) == enabled_targets
-                            else 0
-                        )
                     return _run_discover(database, config, args)
             if args.command == "probe":
                 count = _validate_count(args.first, "--first")
                 backend = SamloaderBackend(config.download)
                 with ProcessLock(config.paths.state / "jayspray.lock"):
-                    results = probe(database, backend, first=count)
-                for probe_result in results:
-                    tag = "OK" if probe_result.resolvable else "FAIL"
+                    target_ids = [
+                        str(row["id"]) for row in database.list_targets(limit=10_000)
+                    ]
+                    target_ids = _unique_target_ids_by_model(
+                        database, target_ids, _metadata_index(database, config)
+                    )[:count]
+                    results = probe(
+                        database, backend, first=count, target_ids=target_ids
+                    )
+                for item in results:
+                    tag = "OK" if item.resolvable else "FAIL"
                     print(
-                        f"[{tag}] {probe_result.model} {probe_result.sales_csc} "
-                        f"{probe_result.version} {redact_text(probe_result.reason)}"
+                        f"[{tag}] {item.model} {item.sales_csc} {item.version or '-'} "
+                        f"release={item.release_id or '-'} {redact_text(item.reason)}"
                     )
-                return 1 if any(not item.resolvable for item in results) else 0
+                return 1 if results and all(not item.resolvable for item in results) else 0
             if args.command == "download":
-                rows = (
-                    [database.get_release(args.release_id)]
-                    if args.release_id
-                    else database.list_releases(
-                        limit=_validate_count(args.first, "--first"),
-                        states=("DISCOVERED", "RESOLVED", "QUEUED", "FAILED"),
-                    )
-                )
-                rows = [row for row in rows if row is not None]
-                if len(rows) > 1 and not args.yes:
-                    raise ValueError(
-                        "multiple firmware downloads require --yes because packages are large"
-                    )
                 backend = SamloaderBackend(config.download)
-                print(f"About to download {len(rows)} firmware package(s), sequentially.")
                 with ProcessLock(config.paths.state / "jayspray.lock"):
-                    for row in rows:
-                        if not row["full_version"]:
-                            resolution = probe(
-                                database,
-                                backend,
-                                first=1,
-                                release_ids=[str(row["id"])],
-                            )[0]
-                            if not resolution.resolvable:
-                                raise RuntimeError(
-                                    f"cannot resolve {row['model']} PDA={row['ap_version']}: "
-                                    f"{resolution.reason}"
-                                )
-                            resolved_row = database.get_release(str(row["id"]))
-                            if resolved_row is None:
-                                raise KeyError(resolution.release_id)
-                            row = resolved_row
+                    metadata_index = _metadata_index(database, config)
+                    if args.release_id:
+                        selected_release = database.get_release(args.release_id)
+                        candidate_rows: list[Any] = (
+                            [selected_release] if selected_release is not None else []
+                        )
+                    else:
+                        if args.model:
+                            if not args.region:
+                                raise ValueError("--model requires --region")
+                            model = normalized_model(args.model)
+                            if metadata_index is not None and metadata_index.contains(model):
+                                print(f"SKIP TARGET {model} reason=model_in_metadata")
+                                return 0
+                            if database.model_has_verified_artifact(model):
+                                print(f"SKIP TARGET {model} reason=model_already_downloaded")
+                                return 0
+                            target_ids = [_manual_target(database, args.model, args.region)]
+                        else:
+                            if args.region:
+                                raise ValueError("--region is only valid with --model")
+                            count = _validate_count(args.first, "--first")
+                            target_ids = [
+                                str(row["id"])
+                                for row in database.list_targets(limit=10_000)
+                            ]
+                        target_ids = _unique_target_ids_by_model(
+                            database, target_ids, metadata_index
+                        )[:count if not args.model else 1]
+                        if not target_ids:
+                            print("No model/region targets selected after metadata checks.")
+                            return 0
+                        _, results = _resolve_target_ids(database, config, target_ids)
+                        failed = [item for item in results if not item.resolvable]
+                        if failed:
+                            raise RuntimeError("one or more model/region targets could not resolve")
+                        candidate_rows = [
+                            row
+                            for item in results
+                            if (row := database.get_release(item.release_id)) is not None
+                        ]
+                    download_rows = _filter_download_rows(
+                        database, candidate_rows, metadata_index
+                    )
+                    if not download_rows:
+                        print("No firmware downloads selected after metadata/model checks.")
+                        return 0
+                    if len(download_rows) > 1 and not args.yes:
+                        raise ValueError(
+                            "multiple firmware downloads require --yes because packages are large"
+                        )
+                    print(
+                        f"About to download {len(download_rows)} firmware package(s), "
+                        "sequentially."
+                    )
+                    for row in download_rows:
                         print(
-                            f"DOWNLOAD {row['model']} {row['sales_csc']} "
-                            f"{row['full_version'] or row['ap_version']} "
+                            f"DOWNLOAD {row['model']} {row['sales_csc']} {row['full_version']} "
                             f"expected_size={row['expected_size']}"
                         )
                         path = download_release(database, config, backend, str(row["id"]))
                         print(f"VERIFIED {path}")
+                        _append_completed_metadata(
+                            database, config, metadata_index, row, path
+                        )
                 return 0
             if args.command == "extract":
                 with ProcessLock(config.paths.state / "jayspray.lock"):
@@ -358,28 +439,37 @@ def main(argv: list[str] | None = None) -> int:
                 _status(database, config)
                 return 0
             if args.command == "search":
-                rows = database.search(args.query, csc=args.csc, pda=args.pda, limit=args.limit)
-                for row in rows:
-                    _print_release(row, database)
+                target_rows = database.search_targets(
+                    args.query, csc=args.region, limit=args.limit
+                )
+                for row in target_rows:
+                    _print_target(row, database)
                 return 0
             if args.command == "show":
-                show_row = database.get_release(args.firmware_id)
-                if show_row is None:
-                    raise KeyError(args.firmware_id)
-                artifacts = [
-                    dict(item)
-                    for item in database.connection.execute(
-                        "SELECT kind, path, size, sha256, status FROM artifact "
-                        "WHERE firmware_release_id = ? ORDER BY id",
-                        (args.firmware_id,),
-                    )
-                ]
+                target = database.get_target(args.target_id)
+                if target is None:
+                    raise KeyError(args.target_id)
+                release = (
+                    database.get_release(str(target["latest_release_id"]))
+                    if target["latest_release_id"]
+                    else None
+                )
+                artifacts = []
+                if release is not None:
+                    artifacts = [
+                        dict(item)
+                        for item in database.connection.execute(
+                            "SELECT kind, path, size, sha256, status FROM artifact "
+                            "WHERE firmware_release_id = ? ORDER BY id",
+                            (release["id"],),
+                        )
+                    ]
                 print(
                     json.dumps(
                         {
-                            "release": dict(show_row),
-                            "observed_by": database.sources_for_release(args.firmware_id),
-                            "Samsung_routes": database.route_observations(args.firmware_id),
+                            "target": dict(target),
+                            "observed_by": database.target_sources(args.target_id),
+                            "latest_release": dict(release) if release else None,
                             "artifacts": artifacts,
                         },
                         indent=2,

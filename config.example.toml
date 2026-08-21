@@ -7,22 +7,12 @@ extracted = "/var/lib/jayspray/extracted"
 cache = "/var/lib/jayspray/cache"
 state = "/var/lib/jayspray/state"
 
-[[targets]]
-model = "SM-S928U1"
-csc = "XAA"
-enabled = true
-
-[[targets]]
-model = "SM-A556E"
-csc = "INS"
-enabled = false
-
 [discovery]
 # Global newest-release indexes. SamFW is supported as an isolated placeholder but
 # disabled because its live feed currently rejects ordinary HTTP requests.
 sources = ["samfrew", "sammobile"]
 pages_per_source = 1
-history_limit_per_target = 5
+lookback_days = 21
 
 [http]
 timeout_seconds = 30
@@ -30,7 +20,13 @@ retries = 3
 retry_base_seconds = 1.0
 request_delay_seconds = 1.0
 max_response_bytes = 5242880
-user_agent = "JAYSPRAY/0.2.0 (+https://github.com/jaydaVis04/JAYSPRAY)"
+user_agent = "JAYSPRAY/0.3.0"
+
+[metadata]
+# Optional: existing catalog scanned and cached by model before Samsung resolution/download.
+# path = "/var/lib/jayspray/INCLUDE_YOUR_metadata.json"
+# Enable only for the documented JSONL schema. Custom/top-level-array JSON is scan-only.
+append_completed = false
 
 [download]
 automatic = false

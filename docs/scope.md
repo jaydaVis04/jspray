@@ -2,40 +2,25 @@
 
 Last changed: 2026-08-21
 
-This file is the authoritative scope checkpoint for future work.
+JAYSPRAY is a Linux-only headless workflow for recent Samsung firmware:
 
-## Active scope
+- read model and region/CSC pairs from public SamFrew, SamMobile, and ordinarily accessible
+  SamFW newest-release indexes;
+- accept only dated records from the last 21 days by default;
+- skip a model already present in an optional large external metadata file;
+- choose one observed region per new model and resolve Samsung's latest official version;
+- download and decrypt through Samsung FUS using a Bifrost-compatible headless backend;
+- verify, extract, inventory, and catalog without flashing a device.
 
-JAYSPRAY is a Linux-only, headless tool with two deliberately separate responsibilities:
+Index PDA values are outside discovery and duplicate policy. Model-level metadata exclusion
+prevents all regions of an already cataloged model from downloading. Model/region remains the
+Samsung request and provenance identity; the exact AP/CSC/CP tuple returned by Samsung is
+stored only to make the official request reproducible. SHA-256 detects identical payloads.
 
-- discover new worldwide model/PDA releases from public SamFrew and SamMobile latest feeds
-- resolve and retrieve those releases from Samsung using the FUS workflow investigated
-  through Bifrost
+Indexes are metadata-only. Website downloads, credentials, GUI automation, CAPTCHA solving,
+paywall bypass, anti-bot evasion, and device flashing are out of scope. SamFW remains disabled
+while its public page denies ordinary HTTP access.
 
-The official-payload stages cover Samsung history and binary metadata, official firmware
-download, `.enc2`/`.enc4` decryption to ZIP, safe extraction, manifests, SQLite state, CLI,
-and systemd automation.
-
-Bifrost cannot enumerate every model/CSC by itself; Samsung requires a known pair. The
-indexes provide model, PDA, and one or more observed CSC routes. CSC is retrieval/provenance
-metadata here, not canonical identity.
-
-The canonical release identity is exactly `normalized model + PDA/AP`. If XAA, EUX, and INS
-list the same PDA, they are observations of one canonical release and only one payload is
-queued. The first observed route that resolves the PDA through Samsung becomes the payload
-route. SHA-256 supplies a second, binary-level duplicate boundary.
-
-## Index boundaries
-
-SamFrew and SamMobile are metadata-only discovery sources. JAYSPRAY uses ordinary HTTPS and
-static parsing, keeps requests bounded, stores provenance, and never uses their download
-pages as the preferred payload path. SamFW currently denies ordinary HTTP access and remains
-disabled; no CAPTCHA, authentication, paywall, or anti-bot bypass is permitted.
-
-## Bifrost terminology correction
-
-Bifrost is not a global scraper or worldwide firmware feed. `VersionFetch` resolves history
-for a supplied model and CSC through Samsung SmartHistory with a FOTA fallback. `Request`
-retrieves Samsung binary metadata; the FUS client downloads the encrypted payload; the
-downloader checks available integrity metadata; and `Decrypter` produces the ZIP. Archive
-extraction is a separate JAYSPRAY step.
+External metadata scanning is format-tolerant and cached. Automatic mutation is opt-in and
+currently limited to a validated JSONL record shape. A different supplied schema requires a
+matching writer before append is enabled.

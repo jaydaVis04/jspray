@@ -84,7 +84,7 @@ def identity_for(observation: FirmwareObservation) -> Identity:
     item = normalize_observation(observation)
     if not item.ap_version:
         raise ValueError("AP/PDA version is required for canonical identity")
-    canonical = _key((item.model, item.ap_version))
+    canonical = _key((item.model, item.sales_csc, item.ap_version))
     return Identity(weak_key=canonical, strong_key=canonical)
 
 

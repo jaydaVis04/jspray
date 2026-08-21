@@ -23,7 +23,7 @@ def observation(csc: str, pda: str, full_version: str) -> FirmwareObservation:
     )
 
 
-def test_same_model_and_pda_are_same_identity_across_csc() -> None:
+def test_same_model_and_pda_are_distinct_across_csc() -> None:
     xaa = observation(
         "XAA",
         "S928U1UES4AXH1",
@@ -34,7 +34,7 @@ def test_same_model_and_pda_are_same_identity_across_csc() -> None:
         "S928U1UES4AXH1",
         "S928U1UES4AXH1/S928U1OXM4AXH2/S928U1UES4AXH1/S928U1UES4AXH1",
     )
-    assert identity_for(xaa) == identity_for(eux)
+    assert identity_for(xaa) != identity_for(eux)
 
 
 def test_different_pda_is_different_identity() -> None:

@@ -6,7 +6,7 @@ import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +20,10 @@ from jayspray.extract import (
     sha256_file,
     verify_zip,
 )
-from jayspray.identity import full_version_components, normalized_csc, normalized_model
+from jayspray.identity import full_version_components
 from jayspray.logging import log_event
-from jayspray.models import FirmwareObservation, ProbeResult, ReleaseState
+from jayspray.metadata_index import ExternalMetadataIndex
+from jayspray.models import FirmwareObservation, ProbeResult, ReleaseState, TargetObservation
 from jayspray.sources.base import FirmwareSource
 
 LOGGER = logging.getLogger(__name__)
@@ -35,6 +36,19 @@ class DiscoveryResult:
     candidates: int = 0
     releases: list[dict[str, Any]] = field(default_factory=list)
     target_errors: dict[str, str] = field(default_factory=dict)
+    source_errors: dict[str, str] = field(default_factory=dict)
+    dry_run: bool = False
+
+
+@dataclass(slots=True)
+class TargetDiscoveryResult:
+    new_targets: int = 0
+    matched_observations: int = 0
+    candidates: int = 0
+    filtered_old: int = 0
+    filtered_undated: int = 0
+    filtered_existing: int = 0
+    targets: list[dict[str, Any]] = field(default_factory=list)
     source_errors: dict[str, str] = field(default_factory=dict)
     dry_run: bool = False
 
@@ -59,119 +73,18 @@ def _official_observation(model: str, csc: str, full_version: str) -> FirmwareOb
     )
 
 
-def discover_targets(
-    database: Database,
-    config: AppConfig,
-    backend: SamsungBackend,
-    *,
-    limit: int | None = None,
-    dry_run: bool = False,
-    history_limit_per_target: int | None = None,
-    command: str = "discover",
-) -> DiscoveryResult:
-    """Discover official Samsung versions for configured model/CSC targets.
-
-    This function does not contact or parse third-party firmware databases.
-    """
-    if not any(target.enabled for target in config.targets):
-        raise ValueError("no enabled Samsung model/CSC targets are configured")
-    target = database.clone_in_memory() if dry_run else database
-    result = DiscoveryResult(dry_run=dry_run)
-    run_id = target.start_run(command, dry_run=dry_run)
-    remaining = limit
-    per_target = history_limit_per_target or config.discovery.history_limit_per_target
-    try:
-        for configured in config.targets:
-            if not configured.enabled or remaining == 0:
-                continue
-            model = normalized_model(configured.model)
-            csc = normalized_csc(configured.csc)
-            target_key = f"{model}/{csc}"
-            try:
-                versions = backend.history(model, csc)[:per_target]
-                if remaining is not None:
-                    versions = versions[:remaining]
-                target.update_watch_target(
-                    model,
-                    csc,
-                    enabled=True,
-                    successful=True,
-                    last_version=versions[0] if versions else None,
-                )
-                for full_version in versions:
-                    observation = _official_observation(model, csc, full_version)
-                    merged = target.upsert_observation(observation)
-                    result.candidates += 1
-                    if merged.outcome == "new_release":
-                        result.new_releases += 1
-                    else:
-                        result.matched_observations += 1
-                    result.releases.append(
-                        {
-                            "id": merged.release_id,
-                            "model": model,
-                            "csc": csc,
-                            "version": full_version,
-                            "outcome": merged.outcome,
-                        }
-                    )
-                if remaining is not None:
-                    remaining -= len(versions)
-            except Exception as exc:
-                message = f"{type(exc).__name__}: {exc}"
-                result.target_errors[target_key] = message
-                target.update_watch_target(
-                    model, csc, enabled=True, successful=False, error=message
-                )
-                target.record_failure(
-                    run_id=run_id,
-                    source="samsung_fus",
-                    operation="discover",
-                    message=message,
-                    details={"model": model, "csc": csc},
-                )
-                log_event(
-                    LOGGER,
-                    logging.ERROR,
-                    "Samsung target discovery failed",
-                    model=model,
-                    csc=csc,
-                    operation="history",
-                    result="failed",
-                )
-        status = "PARTIAL" if result.target_errors else "SUCCESS"
-        target.finish_run(
-            run_id,
-            status,
-            {
-                "targets": len([item for item in config.targets if item.enabled]),
-                "candidates": result.candidates,
-                "new_releases": result.new_releases,
-                "matched_observations": result.matched_observations,
-                "target_errors": len(result.target_errors),
-            },
-        )
-    except Exception:
-        target.finish_run(run_id, "FAILED", {"candidates": result.candidates})
-        raise
-    finally:
-        if dry_run:
-            target.close()
-    return result
-
-
-def _date_sort_key(observation: FirmwareObservation) -> str:
-    value = observation.source_upload_date or observation.build_date or ""
+def _source_date(observation: TargetObservation) -> date | None:
+    value = observation.source_updated_date or ""
     for pattern in ("%Y-%m-%d", "%m/%d/%Y"):
         try:
-            return datetime.strptime(value, pattern).strftime("%Y-%m-%d")
+            return datetime.strptime(value, pattern).date()
         except ValueError:
             continue
-    return "0000-00-00"
+    return None
 
 
-def _fetch_source(source: FirmwareSource, pages: int) -> tuple[FirmwareObservation, ...]:
-    observations: list[FirmwareObservation] = []
+def _fetch_source(source: FirmwareSource, pages: int) -> tuple[TargetObservation, ...]:
+    observations: list[TargetObservation] = []
     page = 0
     for _ in range(pages):
         result = source.fetch_page(page)
@@ -191,15 +104,15 @@ def discover(
     dry_run: bool = False,
     pages_per_source: int | None = None,
     command: str = "discover",
-) -> DiscoveryResult:
-    """Discover global newest releases and deduplicate them by model + PDA."""
+) -> TargetDiscoveryResult:
+    """Discover recent model/CSC targets without trusting index firmware versions."""
     if not sources:
         raise ValueError("no firmware discovery sources are enabled")
     target = database.clone_in_memory() if dry_run else database
-    result = DiscoveryResult(dry_run=dry_run)
+    result = TargetDiscoveryResult(dry_run=dry_run)
     run_id = target.start_run(command, dry_run=dry_run)
     pages = pages_per_source or config.discovery.pages_per_source
-    fetched: dict[str, tuple[FirmwareObservation, ...]] = {}
+    fetched: dict[str, tuple[TargetObservation, ...]] = {}
     try:
         with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="discovery") as pool:
             futures = {pool.submit(_fetch_source, source, pages): source for source in sources}
@@ -232,48 +145,71 @@ def discover(
                         result="failed",
                     )
 
-        ordered: list[FirmwareObservation] = []
+        ordered: list[TargetObservation] = []
         source_order = {source.name: index for index, source in enumerate(sources)}
         for values in fetched.values():
             ordered.extend(values)
         ordered.sort(
-            key=lambda item: (_date_sort_key(item), -source_order.get(item.source, 999)),
+            key=lambda item: (
+                _source_date(item) or date.min,
+                -source_order.get(item.source, 999),
+            ),
             reverse=True,
         )
+
+        cutoff = datetime.now(UTC).date() - timedelta(days=config.discovery.lookback_days)
+        metadata_index = None
+        if config.metadata.path is not None:
+            metadata_index = ExternalMetadataIndex(target, config.metadata.path)
+            metadata_index.refresh()
+        eligible: list[TargetObservation] = []
+        for item in ordered:
+            source_date = _source_date(item)
+            if source_date is None:
+                result.filtered_undated += 1
+            elif source_date < cutoff:
+                result.filtered_old += 1
+            elif metadata_index is not None and metadata_index.contains(item.model):
+                result.filtered_existing += 1
+            else:
+                eligible.append(item)
 
         selected_keys: set[tuple[str, str]] | None = None
         if limit is not None:
             selected_keys = set()
-            for item in ordered:
-                if not item.ap_version:
-                    continue
-                selected_keys.add((item.model.upper(), item.ap_version.upper()))
+            for item in eligible:
+                selected_keys.add((item.model.upper(), item.sales_csc.upper()))
                 if len(selected_keys) >= limit:
                     break
 
-        for observation in ordered:
+        for observation in eligible:
             if (
                 selected_keys is not None
-                and (observation.model.upper(), str(observation.ap_version).upper())
+                and (observation.model.upper(), observation.sales_csc.upper())
                 not in selected_keys
             ):
                 continue
-            merged = target.upsert_observation(observation)
+            merged = target.upsert_target_observation(observation)
             result.candidates += 1
-            if merged.outcome == "new_release":
-                result.new_releases += 1
+            if merged.outcome == "new_target":
+                result.new_targets += 1
             else:
                 result.matched_observations += 1
-            result.releases.append(
+            target_row = target.get_target(merged.target_id)
+            if target_row is None:
+                raise KeyError(merged.target_id)
+            result.targets.append(
                 {
-                    "id": merged.release_id,
+                    "id": merged.target_id,
                     "source": observation.source,
                     "model": observation.model,
                     "csc": observation.sales_csc,
-                    "version": observation.ap_version,
                     "outcome": merged.outcome,
                     "source_count": merged.source_count,
-                    "sources": target.sources_for_release(merged.release_id),
+                    "sources": target.target_sources(merged.target_id),
+                    "source_date": observation.source_updated_date,
+                    "latest_release_id": target_row["latest_release_id"],
+                    "latest_full_version": target_row["latest_full_version"],
                 }
             )
         if not fetched:
@@ -289,8 +225,11 @@ def discover(
                 "sources_enabled": len(sources),
                 "sources_succeeded": len(fetched),
                 "candidates": result.candidates,
-                "new_releases": result.new_releases,
+                "new_targets": result.new_targets,
                 "matched_observations": result.matched_observations,
+                "filtered_old": result.filtered_old,
+                "filtered_undated": result.filtered_undated,
+                "filtered_existing": result.filtered_existing,
             },
         )
     except Exception:
@@ -307,52 +246,48 @@ def probe(
     backend: SamsungBackend,
     *,
     first: int,
-    release_ids: list[str] | None = None,
+    target_ids: list[str] | None = None,
 ) -> list[ProbeResult]:
-    if release_ids is None:
-        rows = database.list_releases(limit=first)
+    if target_ids is None:
+        rows = database.list_targets(limit=first)
     else:
-        rows = [row for item in release_ids if (row := database.get_release(item)) is not None]
-    histories: dict[tuple[str, str], tuple[str, ...] | Exception] = {}
+        rows = [row for item in target_ids if (row := database.get_target(item)) is not None]
     results: list[ProbeResult] = []
     for row in rows:
+        target_id = str(row["id"])
         model = str(row["model"])
-        pda = str(row["ap_version"])
-        routes = [str(item["csc"]) for item in database.route_observations(str(row["id"]))]
-        routes = list(dict.fromkeys([str(row["sales_csc"]), *routes]))
-        errors: list[str] = []
-        resolved: tuple[str, str] | None = None
-        for csc in routes:
-            key = (model, csc)
-            if key not in histories:
-                try:
-                    histories[key] = backend.history(*key)
-                except Exception as exc:
-                    histories[key] = exc
-            history = histories[key]
-            if isinstance(history, Exception):
-                errors.append(f"{csc}: {history}")
-                continue
-            exact = next((item for item in history if item.split("/", 1)[0] == pda), None)
-            if exact:
-                resolved = (csc, exact)
-                break
-        if resolved:
-            csc, full_version = resolved
-            database.set_resolved_version(str(row["id"]), full_version, sales_csc=csc)
+        csc = str(row["sales_csc"])
+        try:
+            history = backend.history(model, csc)
+            if not history:
+                raise RuntimeError("Samsung returned no firmware version")
+            full_version = history[0]
+            merged = database.upsert_observation(_official_observation(model, csc, full_version))
+            database.set_resolved_version(
+                merged.release_id, full_version, sales_csc=csc
+            )
+            database.set_target_resolution(
+                target_id,
+                release_id=merged.release_id,
+                full_version=full_version,
+            )
             results.append(
                 ProbeResult(
-                    str(row["id"]),
+                    target_id,
+                    merged.release_id,
                     model,
                     csc,
                     full_version,
                     True,
-                    "PDA present in official Samsung history",
+                    "latest firmware resolved from Samsung for model and region",
                 )
             )
-        else:
-            reason = "; ".join(errors) if errors else "PDA not present in observed Samsung routes"
-            results.append(ProbeResult(str(row["id"]), model, routes[0], pda, False, reason))
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            database.set_target_resolution(
+                target_id, release_id=None, full_version=None, error=reason
+            )
+            results.append(ProbeResult(target_id, "", model, csc, "", False, reason))
     return results
 
 

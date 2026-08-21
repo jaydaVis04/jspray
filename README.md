@@ -1,230 +1,162 @@
 # JAYSPRAY
 
-`jayspray` is a Linux-only, headless Samsung stock-firmware catalog and retrieval service.
-It watches independent public indexes for newly listed firmware worldwide, deduplicates
-releases by model + PDA, resolves an observed CSC route through Samsung, downloads one
-official payload through Samsung FUS, validates and hashes the decrypted ZIP, extracts it
-safely, and maintains restart-safe SQLite state.
+JAYSPRAY is a Linux-only command-line tool that finds recently listed Samsung firmware,
+resolves the newest official package for each model and region, downloads it from Samsung,
+verifies and decrypts it, extracts it safely, and catalogs the result.
 
-It never flashes a device and never downloads payloads from firmware-index websites.
+It never flashes a phone and never uses firmware-index websites as payload mirrors.
 
-## Why Bifrost matters
+## How it works
 
-The implementation was designed after tracing current Bifrost source. Bifrost establishes
-the required flow: model + CSC history resolution through Samsung SmartHistory/FOTA,
-binary metadata through FUS, official payload download, integrity checking, and `.enc2` /
-`.enc4` decryption to ZIP. Bifrost is a Compose GUI without a supported headless entry
-point and its download model is UI-coupled.
+```text
+SamFrew + SamMobile (+ SamFW when ordinarily accessible)
+                    |
+             model + region only
+                    |
+          last 21 days, one region per model
+                    |
+       optional metadata.json model exclusion
+                    |
+       Samsung latest-version lookup and FUS download
+                    |
+          verify -> decrypt ZIP -> extract -> manifest
+```
 
-The replaceable backend currently invokes the maintained `samloader-rs` 2.x CLI, which
-uses Samsung FUS, supports exact-version downloads, and decrypts to ZIP. No upstream source
-is copied. See [the Bifrost research record](docs/bifrost-research.md),
-[current scope](docs/scope.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
+The public indexes are discovery signals. JAYSPRAY ignores their PDA values when deciding
+what to process. It keeps every model/region observation for provenance, selects only one
+region for each model during a run, and asks Samsung for the current package for that pair.
+Samsung's returned exact version is retained only as internal download/catalog metadata.
 
-JAYSPRAY does not import or automate the Bifrost GUI. Bifrost is the investigated reference
-that confirms how Samsung resolution, integrity metadata, encrypted download, and decryption
-fit together; JAYSPRAY supplies a separate headless Linux workflow around a maintained FUS
-CLI backend.
+Discovery is limited to dated entries from the configured lookback window, which defaults
+to 21 days. Undated and older records are skipped. SamFW currently rejects ordinary HTTP
+access and is disabled by default; JAYSPRAY does not bypass anti-bot controls.
 
-| Responsibility | Bifrost | JAYSPRAY |
-| --- | --- | --- |
-| User interface | Compose desktop GUI | Linux CLI and systemd service |
-| Version lookup | Samsung SmartHistory/FOTA | Samsung history through `samloader-rs` |
-| Payload source | Samsung FUS | Samsung FUS |
-| Decryption | `.enc2`/`.enc4` to ZIP | Backend produces the decrypted ZIP |
-| ZIP extraction/catalog | Not provided | Guarded extraction, hashes, and SQLite catalog |
-| Source reuse | Upstream project | No Bifrost source is copied |
+## Relationship to Bifrost
 
-Bifrost is not a worldwide release feed: its Samsung history calls require a known model
-and CSC. JAYSPRAY therefore uses SamFrew and SamMobile only as discovery signals, then uses
-Samsung/Samloader for resolution and payload retrieval. SamFW's current public pages reject
-ordinary HTTP requests; its isolated placeholder stays disabled rather than bypassing that
-restriction. See [discovery research](docs/discovery-research.md).
+[Bifrost](https://github.com/zacharee/Bifrost) proved the official workflow JAYSPRAY uses:
+given a model and Samsung sales region/CSC, resolve the latest version through Samsung,
+retrieve binary metadata from FUS, download the encrypted `.enc2` or `.enc4` payload, and
+decrypt it into a firmware ZIP.
 
-## PDA-oriented deduplication
+Bifrost is a Compose GUI and has no supported headless CLI/library boundary. JAYSPRAY does
+not automate that GUI or copy its code. Its replaceable backend invokes `samloader-rs` 2.x,
+a headless Samsung FUS client, then JAYSPRAY separately validates and extracts the resulting
+ZIP. See [Bifrost research](docs/bifrost-research.md) and
+[third-party notices](THIRD_PARTY_NOTICES.md).
 
-Samsung requests require a sales CSC, even though country is not important to this catalog.
-Every index observation retains its CSC as a possible Samsung retrieval route, while
-canonical identity is:
+## Use an existing metadata file
 
-`normalized Samsung model + AP/PDA (the first history-version component)`
+A user can point JAYSPRAY at an existing, even million-line, `metadata.json` file:
 
-If XAA and EUX list the same PDA, SQLite stores one release and two source observations.
-During `probe` or `download`, JAYSPRAY tries the observed CSC routes until Samsung returns an
-exact AP/CSC/CP version. A unique SHA-256 blob catalog adds binary-level deduplication after
-download.
+```toml
+[metadata]
+path = "/srv/catalog/metadata.json"
+append_completed = false
+```
 
-## Pipeline and storage
+Before resolution or download, JAYSPRAY scans that file for normalized Samsung model tokens
+such as `SM-S928U1`. If a discovered model appears anywhere in the file, every region for
+that model is skipped. The scan builds a SQLite index once; later runs read only newly
+appended bytes unless the file was replaced, truncated, or rewritten. Lookups are indexed
+SQLite queries, not a new full-file `grep` for every model.
 
-`public latest feeds -> PDA dedupe -> Samsung resolve -> FUS download/decrypt -> ZIP verify -> SHA-256 -> extract -> manifest`
+The input may be JSON, JSON Lines, or other line-oriented text for model checking. The path
+must be absolute, must name a regular file, and symlinks are refused. A configured missing
+or unreadable file stops the run so JAYSPRAY cannot accidentally download known models.
 
-Default state:
+Appending is deliberately opt-in. The current writer supports one JSON object per line
+(JSONL) and appends these keys after a verified download: `model`, `region`, `full_version`,
+`firmware_release_id`, `artifact`, `sha256`, `completed_at`, and `source`. It locks and
+flushes the file before refreshing the cache. Top-level JSON arrays are scan-only and are
+never rewritten. Keep `append_completed = false` until the catalog's exact record format
+has been confirmed; a format-specific writer can then preserve that schema exactly.
+
+The local artifact catalog is also checked by model. Therefore a verified download remains
+protected from a second regional download even while external-file appending is disabled.
+
+Do not commit a private metadata catalog. Its contents remain in the configured external
+file and the local SQLite cache; JAYSPRAY does not print the file contents.
+
+## Install on Linux
+
+Requirements are Linux, Python 3.11+, `git`, and a trusted `samloader-rs` 2.x executable.
+From a fresh clone:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install .
+cp config.example.toml config.toml
+```
+
+Edit `config.toml` to use writable absolute paths and the absolute path to `samloader`.
+For a local non-root test, paths can live under `/var/tmp/jayspray`. If a private CA is used,
+install its certificate in the operating system trust store; do not disable TLS validation.
+
+## Safe first run
+
+```bash
+.venv/bin/jayspray --config "$PWD/config.toml" sync --dry-run
+```
+
+This reads the newest index pages and explains what would resolve, download, or skip. It
+does not persist discovery changes and does not download firmware.
+
+Useful commands:
+
+```bash
+# Persist recent model/region discovery only
+.venv/bin/jayspray --config "$PWD/config.toml" discover --limit 10
+
+# Ask Samsung about the first ten unique models; no payload download
+.venv/bin/jayspray --config "$PWD/config.toml" probe --first 10
+
+# Direct Bifrost-style model + region workflow, one real large download
+.venv/bin/jayspray --config "$PWD/config.toml" download --model SM-S928U1 --region XAA
+
+# Or download the first discovered model
+.venv/bin/jayspray --config "$PWD/config.toml" download --first 1
+
+# Extract a verified download and generate its manifest
+.venv/bin/jayspray --config "$PWD/config.toml" extract <firmware-release-id>
+
+# Search targets and inspect status
+.venv/bin/jayspray --config "$PWD/config.toml" search SM-S928U1
+.venv/bin/jayspray --config "$PWD/config.toml" search --region XAA
+.venv/bin/jayspray --config "$PWD/config.toml" status
+```
+
+Multiple downloads require both `--first N` and `--yes`. Downloads run sequentially, check
+free space, write `.partial` files, validate ZIP members and CRCs, compute SHA-256, and only
+then atomically mark the artifact complete. See the [command guide](docs/commands.md).
+
+## Configuration and storage
+
+Copy [config.example.toml](config.example.toml) and set:
+
+- enabled indexes, request timeouts, retry policy, delay, and 21-day lookback;
+- SQLite, download, extraction, cache, and state paths;
+- optional external metadata path and append policy;
+- absolute `samloader` path and optional executable SHA-256 pin;
+- free-space threshold and automatic download/extraction policy.
+
+Default storage is:
 
 ```text
 /var/lib/jayspray/
 ├── database/firmware.db
-├── downloads/<model>/<pda>/<release-id>/firmware.zip
-├── extracted/<model>/<pda>/<release-id>/manifest.json
+├── downloads/<model>/<resolved-version>/<release-id>/firmware.zip
+├── extracted/<model>/<resolved-version>/<release-id>/manifest.json
 ├── cache/
 └── state/jayspray.lock
 ```
 
-SQLite uses migrations, WAL, foreign keys, a busy timeout, database uniqueness constraints,
-and explicit firmware states. Firmware is written as `.partial`, verified, then atomically
-renamed. The current samloader downloader retries ranges within one process but truncates
-on a new process, so cross-process byte resume is not claimed.
-
-## Linux installation
-
-Requirements:
-
-- Linux with Python 3.11+
-- `samloader-rs` 2.x installed as an executable
-- Enough storage for the ZIP plus extracted contents
-
-Install `samloader` using an upstream Linux release or `cargo install samloader`. Verify the
-binary, install it where unprivileged users cannot modify it, and pin its absolute path and
-optional SHA-256 in the configuration. Then install this project:
-
-```bash
-python3 -m venv /opt/jayspray/venv
-/opt/jayspray/venv/bin/pip install /path/to/jayspray
-sudo install -d -m 0750 /etc/jayspray /var/lib/jayspray
-sudo install -m 0640 config.example.toml /etc/jayspray/config.toml
-```
-
-Create a dedicated `jayspray` user and make `/var/lib/jayspray` writable by
-that user. The package intentionally refuses to run its CLI outside Linux.
-
-## Configuration
-
-Edit `/etc/jayspray/config.toml`. Global discovery works without a target list. Optional
-`[[targets]]` entries are used only by `inspect` and explicit Samsung-history `backfill`:
-
-```toml
-[[targets]]
-model = "SM-S928U1"
-csc = "XAA"
-
-[[targets]]
-model = "SM-S928U1"
-csc = "EUX"
-
-[discovery]
-sources = ["samfrew", "sammobile"]
-pages_per_source = 1
-history_limit_per_target = 5
-
-[http]
-timeout_seconds = 30
-retries = 3
-request_delay_seconds = 1.0
-user_agent = "JAYSPRAY/0.2.0 (+https://github.com/jaydaVis04/JAYSPRAY)"
-
-[download]
-automatic = false
-automatic_extract = false
-concurrency = 1
-connections_per_file = 1
-minimum_free_bytes = 16106127360
-samloader_executable = "/usr/local/bin/samloader"
-# samloader_sha256 = "<verified 64-character digest>"
-```
-
-No website credentials or secrets are required. `JAYSPRAY_CONFIG` may point to another
-absolute config path; do not place secrets in it unless a future backend explicitly needs
-them.
-
-The downloader subprocess receives only locale, certificate, and proxy-related environment
-variables; unrelated parent-process secrets are not inherited. Treat authenticated proxy
-URLs as secrets and keep them in the service manager's protected environment, never Git.
-
-## CLI
-
-The safest first run is `jayspray sync --dry-run`, followed by metadata-only discovery and
-probing. Payload download never happens from `discover`, `inspect`, or `probe`. See the
-[complete command guide](docs/commands.md) for effects, examples, safeguards, and exit codes.
-
-Discover the newest global index records without downloading:
-
-```bash
-jayspray discover
-jayspray discover --limit 10
-```
-
-Preview all database and file effects:
-
-```bash
-jayspray sync --dry-run
-```
-
-Compare PDA names across CSC routes without changing the database:
-
-```bash
-jayspray inspect SM-S928U1 --csc XAA --csc EUX --history-limit 10
-```
-
-Re-probe the first ten cataloged releases against current official Samsung history:
-
-```bash
-jayspray probe --first 10
-```
-
-Download exactly one unresolved release. The command prints its model, route CSC, exact
-version, and known size before starting:
-
-```bash
-jayspray download --first 1
-jayspray download --id <firmware-id>
-```
-
-More than one large package requires explicit confirmation:
-
-```bash
-jayspray download --first 10 --yes
-```
-
-Extract a verified ZIP and create `manifest.json` with every file's path, size, SHA-256,
-component classification, and nested `.tar.md5` flag:
-
-```bash
-jayspray extract <firmware-id>
-```
-
-Search and inspect status:
-
-```bash
-jayspray search SM-S928U1
-jayspray search --pda S928U1UES4
-jayspray search --csc XAA
-jayspray status
-jayspray show <firmware-id>
-```
-
-An explicit deeper official-history ingest is bounded per route:
-
-```bash
-jayspray backfill --history-limit-per-target 50
-```
-
-## Verification and extraction safety
-
-The backend decrypts while downloading. On success `jayspray` checks the ZIP structure,
-validates every member CRC, enforces archive size/count/ratio limits, computes SHA-256, and
-then performs an atomic rename. Extraction rejects absolute paths, `..`, backslash paths,
-symlinks, devices, FIFOs, and oversized or suspicious entries. Nested `.tar.md5` archives
-are cataloged but not recursively unpacked or flashed.
-
-The selected CLI backend does not expose Bifrost's encrypted Samsung CRC32/Content-MD5
-results. Upstream clients may retrieve the encrypted payload over cleartext transport, so
-the recorded post-download SHA-256 is not an authenticated origin proof. Only deploy verified
-downloader builds on trusted networks.
+SQLite migrations preserve target observations, resolved releases, artifacts, runs,
+failures, and the external metadata model index. Extracted manifests list every filename,
+relative path, size, SHA-256, Samsung component classification, and nested `.tar.md5` file.
 
 ## Daily systemd operation
 
-Install [jayspray.service](packaging/systemd/jayspray.service) and
-[jayspray.timer](packaging/systemd/jayspray.timer) under `/etc/systemd/system/`, adjust the
-executable path if needed, then run:
+Install the files from [packaging/systemd](packaging/systemd), adjust paths if needed, then:
 
 ```bash
 sudo systemctl daemon-reload
@@ -233,39 +165,35 @@ systemctl list-timers jayspray.timer
 journalctl -u jayspray.service
 ```
 
-The timer is persistent and randomized. With `automatic=false`, daily sync only updates
-metadata. With `automatic=true`, only newly discovered canonical PDAs download sequentially;
-`automatic_extract=true` also extracts them.
+The persistent randomized timer catches missed runs. The service runs as an unprivileged
+user. With `download.automatic = false`, daily sync performs metadata discovery and Samsung
+resolution only. Enable automatic download or extraction only after verifying storage and
+the external metadata policy.
 
-## Development and tests
+The supplied service can write `/var/lib/jayspray`. If an append-enabled metadata file is
+elsewhere, add that exact directory to the service's `ReadWritePaths`; files under a home
+directory remain inaccessible because `ProtectHome=true`.
+
+## Safety and privacy
+
+No website account is required. JAYSPRAY stores no passwords, browser cookies, or Samsung
+tokens. Logs redact common credential forms and never include complete HTML or metadata-file
+contents. The backend uses argument arrays rather than a shell and receives a restricted
+environment. Archive extraction rejects traversal, links, special files, and suspicious
+sizes or compression ratios.
+
+JAYSPRAY is owner-maintained and does not accept external contributions. The public may
+clone and use it under the repository license.
+
+## Development
 
 ```bash
-python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest
 .venv/bin/ruff check src tests
 .venv/bin/mypy src
+.venv/bin/pytest
+./scripts/test-linux.sh
 ```
 
-Ordinary tests mock Samsung and use tiny ZIPs. A real firmware package is never downloaded
-during unit tests. Run Linux verification in Docker with `scripts/test-linux.sh`.
-
-JAYSPRAY is owner-maintained and does not accept external contributions, feature requests,
-support requests, or collaborator requests. People may clone and use it under the MIT license.
-Security vulnerabilities may be reported through GitHub's private vulnerability-reporting
-feature.
-
-## Troubleshooting
-
-- `samloader executable not found`: install samloader-rs 2.x and configure an absolute path.
-- source failure: the other indexes continue; a parser failure is explicit and never reported
-  as an empty successful feed.
-- probe failure: Samsung may no longer expose that PDA through the observed CSC routes.
-- insufficient space: increase free space or adjust the conservative threshold knowingly.
-- same PDA shown under several CSCs: expected; `search` shows one release and multiple routes.
-- extraction rejected an archive: keep the ZIP for diagnosis and do not bypass path/size guards.
-- interrupted download: rerun it. Current backend restarts that file rather than resuming bytes.
-
-When an index changes, update only its adapter and fixture. When Samsung/Bifrost behavior
-changes, update the backend contract; PDA identity, SQLite, extraction, and scheduling remain
-isolated from both concerns.
+Normal tests mock Samsung and never download a firmware package. Parser changes belong in
+one isolated adapter with a fixture test so a broken source cannot silently look empty.

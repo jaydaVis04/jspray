@@ -4,7 +4,7 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
-from jayspray.models import FirmwareObservation
+from jayspray.models import TargetObservation
 from jayspray.sources.base import FirmwareSource, ParserError, SourcePage
 from jayspray.sources.http import HttpClient
 
@@ -56,28 +56,32 @@ class _SamMobileParser(HTMLParser):
                 self.cell_text.append(value)
 
 
-def parse_sammobile(html: str) -> tuple[FirmwareObservation, ...]:
+def parse_sammobile(html: str) -> tuple[TargetObservation, ...]:
     parser = _SamMobileParser()
     parser.feed(html)
-    observations: list[FirmwareObservation] = []
+    observations: list[TargetObservation] = []
+    seen: set[tuple[str, str]] = set()
     for href, cells in parser.rows:
         match = DETAIL_RE.fullmatch(urlsplit(href).path)
         if match is None:
             continue
+        model = match.group("model").upper()
+        csc = match.group("csc").upper()
+        target_key = (model, csc)
+        if target_key in seen:
+            continue
+        seen.add(target_key)
         observations.append(
-            FirmwareObservation(
+            TargetObservation(
                 source="sammobile",
-                source_record_key=match.group("record"),
+                source_record_key=f"{model}:{csc}",
                 source_url=f"{BASE_URL}/firmwares/",
                 detail_url=urljoin(BASE_URL, href),
-                model=match.group("model"),
-                sales_csc=match.group("csc"),
+                model=model,
+                sales_csc=csc,
                 country=cells[1] or None,
-                ap_version=match.group("pda"),
-                android_version=cells[3] or None,
-                build_date=cells[2] or None,
-                source_upload_date=cells[2] or None,
-                download_status="indexed",
+                source_updated_date=cells[2] or None,
+                extra={"index_record": match.group("record")},
             )
         )
     if not observations:

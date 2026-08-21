@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from jayspray.db import Database
-from jayspray.models import FirmwareObservation, ReleaseState
+from jayspray.models import FirmwareObservation, ReleaseState, TargetObservation
 
 
 def make_observation(csc: str, csc_component: str) -> FirmwareObservation:
@@ -26,18 +26,18 @@ def make_observation(csc: str, csc_component: str) -> FirmwareObservation:
     )
 
 
-def test_same_pda_routes_merge_and_preserve_first_download_route(database: Database) -> None:
+def test_same_pda_in_two_regions_is_two_official_releases(database: Database) -> None:
     first = database.upsert_observation(make_observation("XAA", "S928U1OYM4AXH1"))
     second = database.upsert_observation(make_observation("EUX", "S928U1OXM4AXH2"))
-    assert first.release_id == second.release_id
+    assert first.release_id != second.release_id
     assert first.outcome == "new_release"
-    assert second.outcome == "merged_source"
-    assert second.source_count == 2
+    assert second.outcome == "new_release"
+    assert second.source_count == 1
     rows = database.list_releases()
-    assert len(rows) == 1
-    assert rows[0]["sales_csc"] == "XAA"
+    assert len(rows) == 2
+    assert {row["sales_csc"] for row in rows} == {"XAA", "EUX"}
     routes = database.route_observations(first.release_id)
-    assert [route["csc"] for route in routes] == ["XAA", "EUX"]
+    assert [route["csc"] for route in routes] == ["XAA"]
 
 
 def test_repeated_observation_is_idempotent(database: Database) -> None:
@@ -59,7 +59,7 @@ def test_database_enforces_canonical_identity(database: Database) -> None:
             """INSERT INTO firmware_release(
                  id, weak_key, strong_key, model, sales_csc, ap_version, state,
                  first_discovered_at, last_observed_at, state_updated_at, created_at, updated_at
-               ) VALUES ('duplicate', ?, ?, 'SM-S928U1', 'EUX', 'S928U1UES4AXH1',
+               ) VALUES ('duplicate', ?, ?, 'SM-S928U1', 'XAA', 'S928U1UES4AXH1',
                          'DISCOVERED', 'x', 'x', 'x', 'x', 'x')""",
             (row["weak_key"], row["strong_key"]),
         )
@@ -92,19 +92,6 @@ def test_search_uses_literal_patterns_and_bounded_limit(database: Database) -> N
         database.search(limit=-1)
 
 
-def test_watch_target_error_is_redacted_before_persistence(database: Database) -> None:
-    database.update_watch_target(
-        "SM-S928U1",
-        "XAA",
-        enabled=True,
-        successful=False,
-        error="Authorization: Bearer private-value",
-    )
-    target = database.status_summary()["targets"][0]
-    assert "private-value" not in target["last_error"]
-    assert "REDACTED" in target["last_error"]
-
-
 def test_source_checkpoint_tracks_success_and_redacts_failure(database: Database) -> None:
     database.update_source_checkpoint("samfrew", successful=True, latest_record_key="record-1")
     database.update_source_checkpoint(
@@ -114,3 +101,35 @@ def test_source_checkpoint_tracks_success_and_redacts_failure(database: Database
     assert source["latest_record_key"] == "record-1"
     assert source["last_success_at"] is not None
     assert "private-value" not in source["last_error"]
+
+
+def test_legacy_watch_target_table_is_removed(database: Database) -> None:
+    row = database.connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'watch_target'"
+    ).fetchone()
+    assert row is None
+
+
+def test_model_region_targets_merge_source_provenance(database: Database) -> None:
+    base = dict(
+        source_record_key="SM-S928U1:XAA",
+        detail_url=None,
+        model="SM-S928U1",
+        sales_csc="XAA",
+        source_updated_date="2026-08-21",
+    )
+    first = database.upsert_target_observation(
+        TargetObservation(
+            source="samfrew", source_url="https://samfrew.example", **base
+        )
+    )
+    second = database.upsert_target_observation(
+        TargetObservation(
+            source="sammobile", source_url="https://sammobile.example", **base
+        )
+    )
+
+    assert first.target_id == second.target_id
+    assert second.source_count == 2
+    assert database.target_sources(first.target_id) == ["samfrew", "sammobile"]
+    assert len(database.search_targets("SM-S928U1", csc="xaa")) == 1

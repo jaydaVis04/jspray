@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from jayspray.identity import normalized_csc, normalized_model
-
 
 class ConfigurationError(ValueError):
     pass
@@ -23,27 +21,20 @@ class PathsConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class TargetConfig:
-    model: str
-    csc: str
-    enabled: bool = True
-
-
-@dataclass(frozen=True, slots=True)
 class HttpConfig:
     timeout_seconds: int = 30
     retries: int = 3
     retry_base_seconds: float = 1.0
     request_delay_seconds: float = 1.0
     max_response_bytes: int = 5 * 1024**2
-    user_agent: str = "JAYSPRAY/0.2.0 (+https://github.com/jaydaVis04/JAYSPRAY)"
+    user_agent: str = "JAYSPRAY/0.3.0"
 
 
 @dataclass(frozen=True, slots=True)
 class DiscoveryConfig:
     sources: tuple[str, ...] = ("samfrew", "sammobile")
     pages_per_source: int = 1
-    history_limit_per_target: int = 5
+    lookback_days: int = 21
     http: HttpConfig = field(default_factory=HttpConfig)
 
 
@@ -68,12 +59,18 @@ class ExtractConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class MetadataConfig:
+    path: Path | None = None
+    append_completed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
-    targets: tuple[TargetConfig, ...] = ()
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
     extract: ExtractConfig = field(default_factory=ExtractConfig)
+    metadata: MetadataConfig = field(default_factory=MetadataConfig)
     logging_level: str = "INFO"
 
 
@@ -89,6 +86,14 @@ def _path(value: object, default: Path) -> Path:
         return default
     if not isinstance(value, str) or not value.startswith("/"):
         raise ConfigurationError("storage paths must be absolute Linux paths")
+    return Path(value)
+
+
+def _optional_path(value: object) -> Path | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ConfigurationError("metadata.path must be an absolute Linux path")
     return Path(value)
 
 
@@ -174,30 +179,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     discovery = _section(data, "discovery")
     http = _section(data, "http")
     extract = _section(data, "extract")
-    raw_targets = data.get("targets", [])
-    if not isinstance(raw_targets, list):
-        raise ConfigurationError("[[targets]] must be an array of TOML tables")
-    targets: list[TargetConfig] = []
-    seen_targets: set[tuple[str, str]] = set()
-    for index, target in enumerate(raw_targets):
-        if not isinstance(target, dict):
-            raise ConfigurationError(f"targets[{index}] must be a TOML table")
-        model = target.get("model")
-        csc = target.get("csc")
-        if not isinstance(model, str) or not isinstance(csc, str):
-            raise ConfigurationError(f"targets[{index}] requires string model and csc")
-        normalized = (normalized_model(model), normalized_csc(csc))
-        if normalized in seen_targets:
-            raise ConfigurationError(f"duplicate Samsung target: {normalized[0]}/{normalized[1]}")
-        seen_targets.add(normalized)
-        targets.append(
-            TargetConfig(
-                model=normalized[0],
-                csc=normalized[1],
-                enabled=_boolean(target.get("enabled"), True, f"targets[{index}].enabled"),
-            )
-        )
-
+    metadata = _section(data, "metadata")
     cfg = AppConfig(
         paths=PathsConfig(
             database=_path(paths.get("database"), default.paths.database),
@@ -206,7 +188,6 @@ def load_config(path: Path | None = None) -> AppConfig:
             cache=_path(paths.get("cache"), default.paths.cache),
             state=_path(paths.get("state"), default.paths.state),
         ),
-        targets=tuple(targets),
         discovery=DiscoveryConfig(
             sources=_sources(discovery.get("sources"), default.discovery.sources),
             pages_per_source=_integer(
@@ -214,10 +195,10 @@ def load_config(path: Path | None = None) -> AppConfig:
                 default.discovery.pages_per_source,
                 "discovery.pages_per_source",
             ),
-            history_limit_per_target=_integer(
-                discovery.get("history_limit_per_target"),
-                default.discovery.history_limit_per_target,
-                "discovery.history_limit_per_target",
+            lookback_days=_integer(
+                discovery.get("lookback_days"),
+                default.discovery.lookback_days,
+                "discovery.lookback_days",
             ),
             http=HttpConfig(
                 timeout_seconds=_integer(
@@ -302,11 +283,19 @@ def load_config(path: Path | None = None) -> AppConfig:
                 "extract.max_compression_ratio",
             ),
         ),
+        metadata=MetadataConfig(
+            path=_optional_path(metadata.get("path")),
+            append_completed=_boolean(
+                metadata.get("append_completed"),
+                default.metadata.append_completed,
+                "metadata.append_completed",
+            ),
+        ),
         logging_level=str(data.get("logging_level", default.logging_level)).upper(),
     )
     for value, name in (
-        (cfg.discovery.history_limit_per_target, "discovery.history_limit_per_target"),
         (cfg.discovery.pages_per_source, "discovery.pages_per_source"),
+        (cfg.discovery.lookback_days, "discovery.lookback_days"),
         (cfg.discovery.http.timeout_seconds, "http.timeout_seconds"),
         (cfg.discovery.http.retry_base_seconds, "http.retry_base_seconds"),
         (cfg.discovery.http.request_delay_seconds, "http.request_delay_seconds"),
@@ -325,6 +314,8 @@ def load_config(path: Path | None = None) -> AppConfig:
         raise ConfigurationError("http.retries must be between 0 and 10")
     if cfg.discovery.pages_per_source > 100:
         raise ConfigurationError("discovery.pages_per_source must not exceed 100")
+    if cfg.discovery.lookback_days > 365:
+        raise ConfigurationError("discovery.lookback_days must not exceed 365")
     if cfg.discovery.http.timeout_seconds > 600:
         raise ConfigurationError("http.timeout_seconds must not exceed 600")
     if cfg.discovery.http.max_response_bytes > 20 * 1024**2:
@@ -337,6 +328,8 @@ def load_config(path: Path | None = None) -> AppConfig:
         raise ConfigurationError("http.user_agent must not exceed 256 characters")
     if cfg.download.concurrency != 1:
         raise ConfigurationError("download.concurrency must be 1 in this release")
+    if cfg.metadata.append_completed and cfg.metadata.path is None:
+        raise ConfigurationError("metadata.append_completed requires metadata.path")
     if not Path(cfg.download.samloader_executable).is_absolute():
         raise ConfigurationError("download.samloader_executable must be an absolute path")
     if cfg.logging_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:

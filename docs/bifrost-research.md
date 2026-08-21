@@ -40,21 +40,20 @@ The local `Bifrost/` checkout was inspected at commit
 
 ## What “discovery” means with Bifrost and Samsung
 
-Bifrost does not enumerate all Samsung devices, CSCs, or PDAs. It resolves versions for a
-supplied `model + CSC`. JAYSPRAY obtains those pairs from global public indexes, then checks
-each observed route against Samsung history. Optional configured targets remain useful for
-manual comparison and bounded Samsung-history backfill.
+Bifrost does not enumerate all Samsung devices or CSCs. It resolves versions for a supplied
+`model + CSC`. JAYSPRAY obtains those pairs from recent public index rows and gives the pair
+to the headless backend in the same way a person fills Bifrost's model and region fields.
 
-The catalog uses PDA-oriented deduplication. Accordingly:
+JAYSPRAY does not use index PDA values for discovery or duplicate decisions. It stores:
 
-- request key: `model + CSC` (required by Samsung)
-- observation key: `model + CSC + complete Samsung history version`
-- canonical release key: `model + AP/PDA`
-- download route: the first observed CSC that resolves that PDA through Samsung
+- target key: `model + CSC`, for source provenance and the Samsung request;
+- model exclusion key: `model`, so a cataloged model skips every country/region duplicate;
+- official release key: `model + CSC + Samsung-returned AP version`, internally;
+- binary key: SHA-256 of the verified decrypted ZIP.
 
-This prevents repeated downloads when several countries expose the same PDA. It preserves
-the complete per-CSC observations and does not falsely assert that their regional packages
-would have been byte-identical.
+Only one region for a model is selected in a run. Samsung's complete version tuple remains
+necessary internally because FUS binary retrieval requires it, not because the indexes are
+trusted to choose it.
 
 ## Headless backend decision
 

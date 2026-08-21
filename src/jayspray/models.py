@@ -89,6 +89,28 @@ class FirmwareObservation:
         return data
 
 
+@dataclass(slots=True)
+class TargetObservation:
+    source: str
+    source_record_key: str
+    source_url: str
+    detail_url: str | None
+    model: str
+    sales_csc: str
+    device_name: str | None = None
+    country: str | None = None
+    region: str | None = None
+    carrier: str | None = None
+    source_updated_date: str | None = None
+    observed_at: datetime = field(default_factory=utc_now)
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def as_json_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["observed_at"] = self.observed_at.isoformat()
+        return data
+
+
 @dataclass(frozen=True, slots=True)
 class Identity:
     weak_key: str
@@ -97,6 +119,7 @@ class Identity:
 
 @dataclass(frozen=True, slots=True)
 class ProbeResult:
+    target_id: str
     release_id: str
     model: str
     sales_csc: str
