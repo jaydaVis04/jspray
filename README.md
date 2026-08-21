@@ -18,8 +18,7 @@ point and its download model is UI-coupled.
 The replaceable backend currently invokes the maintained `samloader-rs` 2.x CLI, which
 uses Samsung FUS, supports exact-version downloads, and decrypts to ZIP. No upstream source
 is copied. See [the Bifrost research record](docs/bifrost-research.md),
-[current scope](docs/scope.md), [security policy](SECURITY.md), and
-[third-party notices](THIRD_PARTY_NOTICES.md).
+[current scope](docs/scope.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 JAYSPRAY does not import or automate the Bifrost GUI. Bifrost is the investigated reference
 that confirms how Samsung resolution, integrity metadata, encrypted download, and decryption
@@ -202,9 +201,9 @@ symlinks, devices, FIFOs, and oversized or suspicious entries. Nested `.tar.md5`
 are cataloged but not recursively unpacked or flashed.
 
 The selected CLI backend does not expose Bifrost's encrypted Samsung CRC32/Content-MD5
-results. This is a documented backend capability gap, not silently reported as verified.
-The current upstream binary transport behavior is also documented in
-[the security policy](SECURITY.md); only deploy verified downloader builds on trusted networks.
+results. Upstream clients may retrieve the encrypted payload over cleartext transport, so
+the recorded post-download SHA-256 is not an authenticated origin proof. Only deploy verified
+downloader builds on trusted networks.
 
 ## Daily systemd operation
 
@@ -234,14 +233,12 @@ python3 -m venv .venv
 ```
 
 Ordinary tests mock Samsung and use tiny ZIPs. A real firmware package is never downloaded
-during unit tests. Run Linux verification in Docker with `scripts/test-linux.sh`. The
-metadata-only live acceptance procedure and latest evidence are in
-[docs/acceptance.md](docs/acceptance.md).
+during unit tests. Run Linux verification in Docker with `scripts/test-linux.sh`.
 
 JAYSPRAY is owner-maintained and does not accept external contributions, feature requests,
-support requests, or collaborator requests. People may clone and use it under the MIT
-license. See the [maintenance policy](MAINTENANCE.md) and use only the private process in
-[SECURITY.md](SECURITY.md) for vulnerability reports.
+support requests, or collaborator requests. People may clone and use it under the MIT license.
+Security vulnerabilities may be reported through GitHub's private vulnerability-reporting
+feature.
 
 ## Troubleshooting
 
