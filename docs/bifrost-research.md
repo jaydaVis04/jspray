@@ -2,9 +2,9 @@
 
 Research date: 2026-08-21
 
-All third-party firmware database integrations were cancelled. This record covers
-only the behavior that remains relevant: Bifrost and official Samsung infrastructure.
-See `docs/scope.md` for the authoritative scope.
+This record explains the official Samsung half of JAYSPRAY. Public indexes are required for
+global discovery because Bifrost only resolves known model/CSC pairs. See `docs/scope.md`
+for the authoritative scope and `docs/discovery-research.md` for the index half.
 
 ## Bifrost source inspected
 
@@ -41,15 +41,16 @@ The local `Bifrost/` checkout was inspected at commit
 ## What “discovery” means with Bifrost and Samsung
 
 Bifrost does not enumerate all Samsung devices, CSCs, or PDAs. It resolves versions for a
-supplied `model + CSC`. The production tool therefore accepts a configured list of models
-and probe CSCs. Each CSC query can return multiple exact AP/CSC/CP history strings.
+supplied `model + CSC`. JAYSPRAY obtains those pairs from global public indexes, then checks
+each observed route against Samsung history. Optional configured targets remain useful for
+manual comparison and bounded Samsung-history backfill.
 
 The catalog uses PDA-oriented deduplication. Accordingly:
 
 - request key: `model + CSC` (required by Samsung)
 - observation key: `model + CSC + complete Samsung history version`
 - canonical release key: `model + AP/PDA`
-- download route: the first configured successful CSC observation for that PDA
+- download route: the first observed CSC that resolves that PDA through Samsung
 
 This prevents repeated downloads when several countries expose the same PDA. It preserves
 the complete per-CSC observations and does not falsely assert that their regional packages

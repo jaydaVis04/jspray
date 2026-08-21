@@ -1,11 +1,12 @@
 # JAYSPRAY
 
 `jayspray` is a Linux-only, headless Samsung stock-firmware catalog and retrieval service.
-It queries Samsung firmware history for configured model/CSC routes, deduplicates releases
-by model + PDA, downloads one official payload through Samsung FUS, validates and hashes
-the decrypted ZIP, extracts it safely, and maintains restart-safe SQLite state.
+It watches independent public indexes for newly listed firmware worldwide, deduplicates
+releases by model + PDA, resolves an observed CSC route through Samsung, downloads one
+official payload through Samsung FUS, validates and hashes the decrypted ZIP, extracts it
+safely, and maintains restart-safe SQLite state.
 
-It never flashes a device. It has no SamFrew, SamFW, or SamMobile integration.
+It never flashes a device and never downloads payloads from firmware-index websites.
 
 ## Why Bifrost matters
 
@@ -34,22 +35,28 @@ CLI backend.
 | ZIP extraction/catalog | Not provided | Guarded extraction, hashes, and SQLite catalog |
 | Source reuse | Upstream project | No Bifrost source is copied |
 
+Bifrost is not a worldwide release feed: its Samsung history calls require a known model
+and CSC. JAYSPRAY therefore uses SamFrew and SamMobile only as discovery signals, then uses
+Samsung/Samloader for resolution and payload retrieval. SamFW's current public pages reject
+ordinary HTTP requests; its isolated placeholder stays disabled rather than bypassing that
+restriction. See [discovery research](docs/discovery-research.md).
+
 ## PDA-oriented deduplication
 
 Samsung requests require a sales CSC, even though country is not important to this catalog.
-Configure one or more CSC probe routes per model. Exact Samsung history strings are stored
-for every route, while canonical identity is:
+Every index observation retains its CSC as a possible Samsung retrieval route, while
+canonical identity is:
 
 `normalized Samsung model + AP/PDA (the first history-version component)`
 
-If XAA and EUX return the same PDA, SQLite stores one release, two route observations, and
-queues one download using the first configured successful CSC. Complete CSC/CP/data tuples
-remain auditable because regional packages with the same PDA are not asserted to be
-byte-identical. A unique SHA-256 blob catalog adds content-level deduplication after download.
+If XAA and EUX list the same PDA, SQLite stores one release and two source observations.
+During `probe` or `download`, JAYSPRAY tries the observed CSC routes until Samsung returns an
+exact AP/CSC/CP version. A unique SHA-256 blob catalog adds binary-level deduplication after
+download.
 
 ## Pipeline and storage
 
-`Samsung history -> PDA dedupe -> queue -> FUS download/decrypt -> ZIP verify -> SHA-256 -> extract -> manifest`
+`public latest feeds -> PDA dedupe -> Samsung resolve -> FUS download/decrypt -> ZIP verify -> SHA-256 -> extract -> manifest`
 
 Default state:
 
@@ -91,7 +98,8 @@ that user. The package intentionally refuses to run its CLI outside Linux.
 
 ## Configuration
 
-Edit `/etc/jayspray/config.toml`. Repeat `[[targets]]` for each model/CSC route:
+Edit `/etc/jayspray/config.toml`. Global discovery works without a target list. Optional
+`[[targets]]` entries are used only by `inspect` and explicit Samsung-history `backfill`:
 
 ```toml
 [[targets]]
@@ -103,7 +111,15 @@ model = "SM-S928U1"
 csc = "EUX"
 
 [discovery]
+sources = ["samfrew", "sammobile"]
+pages_per_source = 1
 history_limit_per_target = 5
+
+[http]
+timeout_seconds = 30
+retries = 3
+request_delay_seconds = 1.0
+user_agent = "JAYSPRAY/0.2.0 (+https://github.com/jaydaVis04/JAYSPRAY)"
 
 [download]
 automatic = false
@@ -115,8 +131,7 @@ samloader_executable = "/usr/local/bin/samloader"
 # samloader_sha256 = "<verified 64-character digest>"
 ```
 
-Target order is meaningful: the first route that observes a new PDA becomes its download
-route. No website credentials or secrets are required. `JAYSPRAY_CONFIG` may point to another
+No website credentials or secrets are required. `JAYSPRAY_CONFIG` may point to another
 absolute config path; do not place secrets in it unless a future backend explicitly needs
 them.
 
@@ -130,7 +145,7 @@ The safest first run is `jayspray sync --dry-run`, followed by metadata-only dis
 probing. Payload download never happens from `discover`, `inspect`, or `probe`. See the
 [complete command guide](docs/commands.md) for effects, examples, safeguards, and exit codes.
 
-Discover bounded Samsung history without downloading:
+Discover the newest global index records without downloading:
 
 ```bash
 jayspray discover
@@ -243,12 +258,14 @@ feature.
 ## Troubleshooting
 
 - `samloader executable not found`: install samloader-rs 2.x and configure an absolute path.
-- no targets: add at least one enabled `[[targets]]`; Samsung cannot discover without CSCs.
-- target failure: confirm the model and CSC are valid together. Other targets still run.
+- source failure: the other indexes continue; a parser failure is explicit and never reported
+  as an empty successful feed.
+- probe failure: Samsung may no longer expose that PDA through the observed CSC routes.
 - insufficient space: increase free space or adjust the conservative threshold knowingly.
 - same PDA shown under several CSCs: expected; `search` shows one release and multiple routes.
 - extraction rejected an archive: keep the ZIP for diagnosis and do not bypass path/size guards.
 - interrupted download: rerun it. Current backend restarts that file rather than resuming bytes.
 
-When Samsung/Bifrost behavior changes, update the backend module and fixture/mock contract;
-PDA identity, SQLite, extraction, and scheduling remain isolated from protocol details.
+When an index changes, update only its adapter and fixture. When Samsung/Bifrost behavior
+changes, update the backend contract; PDA identity, SQLite, extraction, and scheduling remain
+isolated from both concerns.

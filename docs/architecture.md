@@ -2,71 +2,57 @@
 
 ## Pipeline
 
-The Python orchestration package owns a configured model/CSC watch list, normalization,
-SQLite state, scheduling, policy, verification, extraction, and cataloguing. For each
-enabled target it asks the Samsung/FUS backend for firmware history, records newly seen
-official versions, and queues them according to policy. A single download worker invokes
-the Samsung/FUS backend and then validates, catalogues, and extracts the resulting ZIP.
+The Python orchestration package owns fixed-origin discovery adapters, normalization, SQLite
+state, scheduling, policy, verification, extraction, and cataloguing. It fetches the newest
+index pages concurrently, merges repeated model/PDA observations, then uses an observed CSC
+to resolve the exact version through Samsung. A single download worker invokes the FUS
+backend and validates, catalogues, and extracts the resulting ZIP.
 
-The stages are:
+`indexes -> canonicalize -> Samsung resolve -> queue -> download -> verify -> decrypt -> extract -> catalog`
 
-`Samsung history -> canonicalize -> queue -> download -> verify -> decrypt -> extract -> catalog`
-
-The `decrypt` state records that the backend output is a decrypted archive even though
-the backend performs download and decryption in one process.
+The `DECRYPTED` state records that the backend output is a decrypted archive even though the
+backend performs download and decryption in one process.
 
 ## Canonical identity
 
-Samsung requires a sales CSC for FUS lookup, but the operator's catalog is PDA-oriented.
-Canonical identity is therefore:
+Samsung requires a sales CSC for FUS lookup, but the catalog is PDA-oriented. Canonical
+identity is the SHA-256 of `normalized MODEL NUL normalized AP/PDA`. Country and CSC never
+create a second release with the same model/PDA.
 
-- Canonical key: `MODEL NUL AP/PDA`
-
-Values are trimmed and uppercased before a SHA-256 key is calculated. Samsung history
-normally supplies the AP/CSC/CP slash tuple and may supply a fourth data component. Every
-CSC-specific returned string is preserved as an observation, but two observations with the
-same model and PDA attach to one release even if their CSC/CP components differ. The first
-configured successful route supplies the exact version and CSC used for the one payload
-download. This is an intentional operator policy, not a claim that regional binaries are
-byte-identical.
-
-SQLite enforces unique model+PDA identities and unique official Samsung history observations.
-Downloaded firmware ZIPs are keyed by binary SHA-256, giving a second content-level
-deduplication boundary.
+Every index record is preserved as a source observation, including source URL and CSC. A
+probe tries unique observed CSC routes until Samsung returns a complete exact AP/CSC/CP
+version. Downloaded ZIPs are keyed by SHA-256 for content-level deduplication.
 
 ## Incremental discovery
 
-Each watch target records its last check and last observed Samsung version. A normal sync
-requests Samsung history once per target and inserts only unseen exact versions. A target
-failure is isolated so other targets continue. There is no third-party HTML, pagination,
-parser, cross-site agreement, or website checkpoint layer.
+A normal sync requests only the configured number of newest pages—one per source by default—
+and inserts only unseen source record keys. Adapters run concurrently with bounded retries,
+timeouts, and response sizes. One source or parser failure is isolated so the others
+continue. Fixture tests make “parser broken” distinct from “zero new firmware.” Deeper
+SamFrew pagination must be explicitly configured.
 
 ## Persistence and restart safety
 
-SQLite runs with foreign keys, WAL, a busy timeout, explicit transactions, and migrations.
-Canonical releases and source observations are distinct. Runs, failures, source
-checkpoints, artifacts, and queued work are durable.
+SQLite runs with foreign keys, WAL, a busy timeout, explicit transactions, and packaged
+migrations. Canonical releases and source observations are distinct. Runs, failures,
+artifacts, and queued work are durable.
 
-Migration SQL is packaged under `src/jayspray/migration_sql/` so installed wheels can apply
-it. Migrations run transactionally in lexical order and are append-only after release.
-
-State transitions are validated:
+States progress through:
 
 `DISCOVERED -> RESOLVED -> QUEUED -> DOWNLOADING -> DOWNLOADED -> VERIFIED -> DECRYPTED -> EXTRACTED`
 
-Failures can occur from any active state and retry back to a queue. A process lock prevents
-overlapping systemd and manual mutation runs. Files use deterministic paths and temporary
-names; completion is only committed after verification and atomic rename.
+A process lock prevents overlapping mutation runs. Firmware is written to `.partial`,
+verified, then atomically renamed. Existing verified artifacts are reconciled after an
+interrupted database commit.
 
 ## Security boundaries
 
+- Discovery is HTTPS-only, restricted to hard-coded source hosts, response-size limited,
+  unauthenticated, and never logs complete HTML.
 - Backend subprocesses use argument arrays, never a shell, and validate model, CSC, and
-  version strings. The configured executable must be an absolute, non-writable regular file;
-  it can also be pinned by SHA-256. Only explicitly allowlisted environment variables pass
-  to the child process.
-- Logs, console errors, and persisted failures redact secret-bearing keys and common
-  credential forms. They never store HTML bodies or authentication tokens intentionally.
-- ZIP extraction rejects absolute paths, traversal, symlinks, device-like entries,
-  excessive member counts, oversized output, and suspicious compression ratios.
-- Managed lock, download, and manifest paths reject symlinks.
-- No flashing code exists. Website login and CAPTCHA automation are out of scope.
+  version strings. The executable must be an absolute, non-writable regular file and may be
+  pinned by SHA-256.
+- Logs and persisted failures redact secret-bearing keys and common credential forms.
+- ZIP extraction rejects absolute paths, traversal, symlinks, special files, excessive
+  member counts, oversized output, and suspicious compression ratios.
+- Website login, CAPTCHA automation, access-control bypass, and device flashing are absent.

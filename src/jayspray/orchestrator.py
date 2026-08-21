@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,7 @@ from jayspray.extract import (
 from jayspray.identity import full_version_components, normalized_csc, normalized_model
 from jayspray.logging import log_event
 from jayspray.models import FirmwareObservation, ProbeResult, ReleaseState
+from jayspray.sources.base import FirmwareSource
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +35,7 @@ class DiscoveryResult:
     candidates: int = 0
     releases: list[dict[str, Any]] = field(default_factory=list)
     target_errors: dict[str, str] = field(default_factory=dict)
+    source_errors: dict[str, str] = field(default_factory=dict)
     dry_run: bool = False
 
 
@@ -55,7 +59,7 @@ def _official_observation(model: str, csc: str, full_version: str) -> FirmwareOb
     )
 
 
-def discover(
+def discover_targets(
     database: Database,
     config: AppConfig,
     backend: SamsungBackend,
@@ -156,36 +160,199 @@ def discover(
     return result
 
 
-def probe(database: Database, backend: SamsungBackend, *, first: int) -> list[ProbeResult]:
-    rows = database.list_releases(limit=first)
+def _date_sort_key(observation: FirmwareObservation) -> str:
+    value = observation.source_upload_date or observation.build_date or ""
+    for pattern in ("%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(value, pattern).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return "0000-00-00"
+
+
+def _fetch_source(source: FirmwareSource, pages: int) -> tuple[FirmwareObservation, ...]:
+    observations: list[FirmwareObservation] = []
+    page = 0
+    for _ in range(pages):
+        result = source.fetch_page(page)
+        observations.extend(result.observations)
+        if result.next_page is None or not result.observations:
+            break
+        page = result.next_page
+    return tuple(observations)
+
+
+def discover(
+    database: Database,
+    config: AppConfig,
+    sources: tuple[FirmwareSource, ...],
+    *,
+    limit: int | None = None,
+    dry_run: bool = False,
+    pages_per_source: int | None = None,
+    command: str = "discover",
+) -> DiscoveryResult:
+    """Discover global newest releases and deduplicate them by model + PDA."""
+    if not sources:
+        raise ValueError("no firmware discovery sources are enabled")
+    target = database.clone_in_memory() if dry_run else database
+    result = DiscoveryResult(dry_run=dry_run)
+    run_id = target.start_run(command, dry_run=dry_run)
+    pages = pages_per_source or config.discovery.pages_per_source
+    fetched: dict[str, tuple[FirmwareObservation, ...]] = {}
+    try:
+        with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="discovery") as pool:
+            futures = {pool.submit(_fetch_source, source, pages): source for source in sources}
+            for future in as_completed(futures):
+                source = futures[future]
+                try:
+                    fetched[source.name] = future.result()
+                    latest_key = (
+                        fetched[source.name][0].source_record_key if fetched[source.name] else None
+                    )
+                    target.update_source_checkpoint(
+                        source.name, successful=True, latest_record_key=latest_key
+                    )
+                except Exception as exc:
+                    message = f"{type(exc).__name__}: {exc}"
+                    result.source_errors[source.name] = message
+                    target.update_source_checkpoint(source.name, successful=False, error=message)
+                    target.record_failure(
+                        run_id=run_id,
+                        source=source.name,
+                        operation="discover",
+                        message=message,
+                    )
+                    log_event(
+                        LOGGER,
+                        logging.ERROR,
+                        "Firmware index discovery failed",
+                        source=source.name,
+                        operation="discover",
+                        result="failed",
+                    )
+
+        ordered: list[FirmwareObservation] = []
+        source_order = {source.name: index for index, source in enumerate(sources)}
+        for values in fetched.values():
+            ordered.extend(values)
+        ordered.sort(
+            key=lambda item: (_date_sort_key(item), -source_order.get(item.source, 999)),
+            reverse=True,
+        )
+
+        selected_keys: set[tuple[str, str]] | None = None
+        if limit is not None:
+            selected_keys = set()
+            for item in ordered:
+                if not item.ap_version:
+                    continue
+                selected_keys.add((item.model.upper(), item.ap_version.upper()))
+                if len(selected_keys) >= limit:
+                    break
+
+        for observation in ordered:
+            if (
+                selected_keys is not None
+                and (observation.model.upper(), str(observation.ap_version).upper())
+                not in selected_keys
+            ):
+                continue
+            merged = target.upsert_observation(observation)
+            result.candidates += 1
+            if merged.outcome == "new_release":
+                result.new_releases += 1
+            else:
+                result.matched_observations += 1
+            result.releases.append(
+                {
+                    "id": merged.release_id,
+                    "source": observation.source,
+                    "model": observation.model,
+                    "csc": observation.sales_csc,
+                    "version": observation.ap_version,
+                    "outcome": merged.outcome,
+                    "source_count": merged.source_count,
+                    "sources": target.sources_for_release(merged.release_id),
+                }
+            )
+        if not fetched:
+            status = "FAILED"
+        elif result.source_errors:
+            status = "PARTIAL"
+        else:
+            status = "SUCCESS"
+        target.finish_run(
+            run_id,
+            status,
+            {
+                "sources_enabled": len(sources),
+                "sources_succeeded": len(fetched),
+                "candidates": result.candidates,
+                "new_releases": result.new_releases,
+                "matched_observations": result.matched_observations,
+            },
+        )
+    except Exception:
+        target.finish_run(run_id, "FAILED", {"candidates": result.candidates})
+        raise
+    finally:
+        if dry_run:
+            target.close()
+    return result
+
+
+def probe(
+    database: Database,
+    backend: SamsungBackend,
+    *,
+    first: int,
+    release_ids: list[str] | None = None,
+) -> list[ProbeResult]:
+    if release_ids is None:
+        rows = database.list_releases(limit=first)
+    else:
+        rows = [row for item in release_ids if (row := database.get_release(item)) is not None]
     histories: dict[tuple[str, str], tuple[str, ...] | Exception] = {}
     results: list[ProbeResult] = []
     for row in rows:
-        key = (str(row["model"]), str(row["sales_csc"]))
-        if key not in histories:
-            try:
-                histories[key] = backend.history(*key)
-            except Exception as exc:
-                histories[key] = exc
-        history = histories[key]
-        version = str(row["full_version"] or row["ap_version"])
-        if isinstance(history, Exception):
-            results.append(ProbeResult(str(row["id"]), *key, version, False, str(history)))
-            continue
-        if version in history:
-            if not row["full_version"]:
-                database.set_resolved_version(str(row["id"]), version)
+        model = str(row["model"])
+        pda = str(row["ap_version"])
+        routes = [str(item["csc"]) for item in database.route_observations(str(row["id"]))]
+        routes = list(dict.fromkeys([str(row["sales_csc"]), *routes]))
+        errors: list[str] = []
+        resolved: tuple[str, str] | None = None
+        for csc in routes:
+            key = (model, csc)
+            if key not in histories:
+                try:
+                    histories[key] = backend.history(*key)
+                except Exception as exc:
+                    histories[key] = exc
+            history = histories[key]
+            if isinstance(history, Exception):
+                errors.append(f"{csc}: {history}")
+                continue
+            exact = next((item for item in history if item.split("/", 1)[0] == pda), None)
+            if exact:
+                resolved = (csc, exact)
+                break
+        if resolved:
+            csc, full_version = resolved
+            database.set_resolved_version(str(row["id"]), full_version, sales_csc=csc)
             results.append(
                 ProbeResult(
-                    str(row["id"]), *key, version, True, "present in official Samsung history"
+                    str(row["id"]),
+                    model,
+                    csc,
+                    full_version,
+                    True,
+                    "PDA present in official Samsung history",
                 )
             )
         else:
-            results.append(
-                ProbeResult(
-                    str(row["id"]), *key, version, False, "not present in current Samsung history"
-                )
-            )
+            reason = "; ".join(errors) if errors else "PDA not present in observed Samsung routes"
+            results.append(ProbeResult(str(row["id"]), model, routes[0], pda, False, reason))
     return results
 
 
