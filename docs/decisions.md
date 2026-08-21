@@ -46,8 +46,8 @@ It is updated at meaningful milestones, not for every edit.
 
 - Renamed the public CLI, Python package, Linux paths, systemd units, and test image to
   JAYSPRAY; the command is `jayspray`.
-- Added a dedicated command guide, security policy, contribution guide, documentation index,
-  read-only GitHub Actions permissions, Dependabot configuration, and pinned build inputs.
+- Added a dedicated command guide, security policy, documentation index, read-only GitHub
+  Actions permissions, and pinned build inputs.
 - Made TOML types strict so values such as `automatic = "false"` cannot accidentally enable
   downloads. Added general diagnostic redaction, a minimal downloader environment, optional
   downloader SHA-256 pinning, symlink-resistant managed paths, and non-root container tests.
@@ -66,3 +66,15 @@ It is updated at meaningful milestones, not for every edit.
 - Repeated discovery matched the existing observation, and repeated download-by-ID returned
   the unchanged verified ZIP without a second transfer or `.partial` file.
 - No nested component archive was unpacked and no firmware was flashed.
+
+## 2026-08-21 — Owner-maintained upstream policy
+
+- The public upstream repository is maintained only by its owner and does not accept external
+  contributions, feature requests, support requests, or collaborator access requests.
+- Removed the contribution guide and Dependabot pull-request configuration. Dependency updates
+  are handled during owner maintenance without automated public pull requests.
+- Public cloning and use remain available under the MIT license; that license does not grant
+  write or merge access to the upstream repository.
+- GitHub issues, discussions, projects, and wiki are disabled, and pull-request creation is
+  restricted to the sole collaborator. Private vulnerability reporting remains the only
+  supported reporting channel.
